@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Logistics Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#F4F5F2; --surface:#fff; --head:#ECEEE9; --ink:#17212B; --mute:#617080;
+    --line:#DFE3E7; --line-strong:#C6CDD3;
+    --signal:#CB4B0B; --signal-hover:#B24009; --signal-soft:#FDEDE3;
+    --go:#17784A; --go-soft:#E3F3EA; --stop:#B3261E; --stop-soft:#FCE9E7; --sel:#FFF7F1;
+    --radius:6px;
+  }
+  *{box-sizing:border-box}
+  html{color-scheme:light}
+  body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.45 "IBM Plex Sans",system-ui,sans-serif;font-variant-numeric:tabular-nums}
+  button,input,select{font:inherit;color:inherit}
+  button{cursor:pointer}
+  :focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+
+  /* top bar */
+  .top{display:flex;align-items:center;gap:12px;padding:12px 20px;background:var(--surface);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:30}
+  .top h1{font-size:18px;font-weight:600;margin:0 auto 0 0;letter-spacing:-.01em}
+  .btn{padding:7px 14px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface);font-weight:500}
+  .btn:hover:not(:disabled){border-color:var(--ink)}
+  .btn:disabled{opacity:.45;cursor:default}
+  .btn.ship{background:var(--signal);border-color:var(--signal);color:#fff;font-weight:600}
+  .btn.ship:hover:not(:disabled){background:var(--signal-hover);border-color:var(--signal-hover)}
+
+  /* toolbar */
+  .bar{display:flex;flex-wrap:wrap;align-items:center;gap:14px;padding:12px 20px 0}
+  .seg{display:inline-flex;border:1px solid var(--line-strong);border-radius:var(--radius);overflow:hidden;background:var(--surface)}
+  .seg button{border:0;background:none;padding:7px 14px;font-weight:500;color:var(--mute)}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button[aria-pressed=true]{background:var(--ink);color:#fff}
+  .fld{display:flex;align-items:center;gap:6px;color:var(--mute);font-size:13px}
+  .in{padding:6px 9px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface);min-width:0}
+  .in:focus{border-color:var(--ink);outline:none}
+  #search{width:230px}
+  #chips{display:flex;flex-wrap:wrap;gap:8px;padding:10px 20px 0;min-height:38px}
+  .chip{display:inline-flex;align-items:center;gap:6px;padding:3px 6px 3px 10px;border-radius:99px;background:var(--signal-soft);border:1px solid #F2C6AA;font-size:13px}
+  .chip button{border:0;background:none;padding:0 4px;font-size:16px;line-height:1;color:var(--signal)}
+  .chip.clear{background:none;border:0;color:var(--mute);text-decoration:underline;padding:3px 4px;cursor:pointer}
+
+  /* progress bar while loading */
+  #load{height:2px;margin-top:12px;background:transparent;overflow:hidden}
+  #load.on::after{content:"";display:block;height:100%;width:30%;background:var(--signal);animation:slide 1s ease-in-out infinite}
+  @keyframes slide{from{transform:translateX(-100%)}to{transform:translateX(340%)}}
+  @media (prefers-reduced-motion:reduce){#load.on::after{animation:none;width:100%;opacity:.5}}
+
+  /* table */
+  .wrap{margin:0 20px 20px;background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:auto;max-height:calc(100vh - 230px)}
+  table{border-collapse:separate;border-spacing:0;table-layout:fixed;width:100%;min-width:1780px}
+  th{position:sticky;top:0;z-index:5;background:var(--head);text-align:left;font-weight:600;font-size:13px;padding:0;border-bottom:1px solid var(--line-strong);white-space:nowrap}
+  .th{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:9px 8px 9px 10px}
+  .fbtn{display:grid;place-items:center;width:24px;height:24px;border:0;border-radius:4px;background:none;color:var(--mute)}
+  .fbtn:hover{background:#DDE1DA;color:var(--ink)}
+  .fbtn.on{background:var(--signal);color:#fff}
+  td{padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  tbody tr:hover td{background:#FAFAF8}
+  tbody tr.picked td{background:var(--sel)}
+  .stick{position:sticky;z-index:4;background:inherit}
+  th.stick{z-index:7;background:var(--head)}
+  td.stick{background:var(--surface)}
+  tbody tr:hover td.stick{background:#FAFAF8}
+  tbody tr.picked td.stick{background:var(--sel)}
+  .c0{left:0}
+  .c1{left:44px;border-right:1px solid var(--line)}
+  .cR{right:0;border-left:1px solid var(--line-strong)}
+  td.c0{text-align:center}
+  .clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;max-width:250px}
+  .sub{font-size:12px;color:var(--mute);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;max-width:190px}
+  .tag{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:500;border:1px solid var(--line-strong);background:var(--surface)}
+  .tag.cod{background:var(--signal-soft);border-color:#F2C6AA;color:#8F3407}
+  .tag.prepaid{background:var(--go-soft);border-color:#B7DEC8;color:#0F5A36}
+  .ok{color:var(--go);font-weight:500}
+  .dim{color:var(--mute)}
+  .note{font-size:12px;margin-top:4px}.note.ok{color:var(--go)}.note.bad{color:var(--stop)}
+  td select{padding:6px 8px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface);max-width:190px}
+  .go{padding:6px 14px;border:1px solid var(--ink);border-radius:var(--radius);background:var(--surface);font-weight:500}
+  .go:hover:not(:disabled){background:var(--ink);color:#fff}
+  .go:disabled{opacity:.45}
+  input[type=checkbox]{width:16px;height:16px;accent-color:var(--signal);cursor:pointer}
+
+  .empty{padding:44px 20px;text-align:center;color:var(--mute)}
+  .empty .btn{margin-top:12px}
+  #pager{display:flex;gap:14px;align-items:center;justify-content:center;padding:0 20px 28px;color:var(--mute)}
+  #warn{padding:8px 20px 0;color:var(--stop);font-size:13px}
+
+  /* filter popover */
+  .pop{position:fixed;z-index:60;width:250px;background:var(--surface);border:1px solid var(--line-strong);border-radius:8px;box-shadow:0 8px 24px rgba(23,33,43,.14);padding:12px}
+  .pop h3{margin:0 0 8px;font-size:13px;font-weight:600}
+  .pop .in{width:100%}
+  .pop .row{display:flex;gap:8px;margin-top:8px}
+  .pop .links{display:flex;gap:14px;margin:8px 0 4px}
+  .pop .links button{border:0;background:none;padding:0;color:var(--signal);font-size:13px;font-weight:500}
+  .opts{max-height:220px;overflow:auto;margin-top:4px}
+  .opts label{display:flex;gap:8px;align-items:center;padding:5px 2px;cursor:pointer}
+  .hint{font-size:12px;color:var(--mute);margin-top:8px}
+
+  /* login */
+  #login{max-width:340px;margin:16vh auto;padding:24px;background:var(--surface);border:1px solid var(--line);border-radius:8px;display:none}
+  #login h2{margin:0 0 4px;font-size:18px}
+  #login .in,#login .btn{width:100%;margin-top:12px}
+  .err{color:var(--stop);font-size:13px;margin-top:8px}
+</style>
+</head>
+<body>
+<div id="login">
+  <h2>Logistics Dashboard</h2>
+  <div class="dim">Enter the team password to continue.</div>
+  <input class="in" id="pw" type="password" name="dash-access-key" placeholder="Password" autocomplete="new-password" autofocus>
+  <button class="btn ship" id="loginBtn">Sign in</button>
+  <div class="err" id="loginErr"></div>
+</div>
+
+<div id="app" style="display:none">
+  <div class="top">
+    <h1>Logistics Dashboard</h1>
+    <button class="btn" id="refresh">Refresh</button>
+    <button class="btn ship" id="bulk" disabled>Ship selected (0)</button>
+  </div>
+
+  <div class="bar">
+    <div class="seg" id="views" role="group" aria-label="Order view">
+      <button data-v="ready" aria-pressed="true">Ready to ship</button>
+      <button data-v="shipped" aria-pressed="false">Shipped</button>
+      <button data-v="all" aria-pressed="false">All orders</button>
+    </div>
+    <label class="fld">From <input class="in" type="date" id="from"></label>
+    <label class="fld">To <input class="in" type="date" id="to"></label>
+    <input class="in" id="search" placeholder="Search name, order, pin, SKU" aria-label="Search">
+  </div>
+  <div id="chips"></div>
+  <div id="load"></div>
+
+  <div class="wrap" id="wrap">
+    <table>
+      <colgroup id="cols"></colgroup>
+      <thead><tr id="head"></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" style="display:none"></div>
+  </div>
+  <div id="warn"></div>
+  <div id="pager"><button class="btn" id="prev">Previous</button><span id="pageInfo"></span><button class="btn" id="next">Next</button></div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ---------- state ----------
+let orders = [], view = 'ready';
+let pageIdx = 0, cursors = [null], hasNext = false, hidden = 0, capped = false, loading = false;
+const known = {};            // orderId -> order, across pages (bulk select survives paging and filtering)
+const couriers = {};         // orderId -> couriers Shiprocket says can serve the order
+const selected = new Set();
+const choice = {};           // orderId -> partner picked in the dropdown
+const notes = {};            // orderId -> {ok,text}
+const opts = { disposition: [], partner: [] };
+const F = {};                // column filters: key -> array (list) | {min,max} (range) | string (text)
+
+const FUNNEL = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1.5 2h13l-5 6.2V13l-3 1.5V8.2z"/></svg>';
+const COLS = [
+  { key: 'pick', label: '', cls: 'stick c0', w: 44 },
+  { key: 'order', label: 'Order', type: 'text', cls: 'stick c1', w: 90 },
+  { key: 'placed', label: 'Placed', w: 120 },
+  { key: 'customer', label: 'Customer', type: 'text', w: 120 },
+  { key: 'address', label: 'Address', type: 'text', w: 220 },
+  { key: 'pin', label: 'Pin', type: 'text', w: 80 },
+  { key: 'payment', label: 'Payment', type: 'list', choices: () => [{ v: 'cod', t: 'COD' }, { v: 'prepaid', t: 'Prepaid' }], w: 90 },
+  { key: 'amount', label: 'Amount', type: 'range', w: 90 },
+  { key: 'sku', label: 'SKU', type: 'text', w: 170 },
+  { key: 'qty', label: 'Qty', type: 'range', w: 70 },
+  { key: 'disposition', label: 'Disposition', type: 'list', choices: () => [{ v: '', t: '(Blank)' }, ...opts.disposition.map((v) => ({ v, t: v }))], w: 120 },
+  { key: 'partner', label: 'Suggested partner', type: 'list', choices: () => [{ v: '', t: 'No preference' }, ...opts.partner.map((v) => ({ v, t: v }))], w: 185 },
+  { key: 'use', label: 'Use partner', w: 170 },
+  { key: 'status', label: 'Status', w: 100 },
+  { key: 'act', label: '', cls: 'stick cR', w: 84 },
+];
+
+const isReady = (o) => String(o.status).toUpperCase() === 'NEW' && o.shipmentId && !o.awb;
+const isOn = (c) => { const v = F[c.key]; return c.type === 'list' ? v?.length > 0 : c.type === 'range' ? (v && (v.min !== '' && v.min != null || v.max !== '' && v.max != null)) : c.type === 'text' ? !!(v && v.trim()) : false; };
+
+// ---------- api ----------
+async function api(url, o) {
+  const r = await fetch(url, o && { ...o, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(o.body) });
+  if (r.status === 401 && url !== '/api/login') { showLogin(); throw new Error('auth'); }
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || 'Request failed');
+  return d;
+}
+function showLogin() { $('#app').style.display = 'none'; $('#login').style.display = 'block'; $('#pw').focus(); }
+
+function activeFilters() {
+  const f = {};
+  for (const c of COLS) if (isOn(c)) f[c.key] = F[c.key];
+  return f;
+}
+
+let loadSeq = 0;
+async function load(fresh = false) {
+  const seq = ++loadSeq;
+  loading = true;
+  $('#login').style.display = 'none'; $('#app').style.display = 'block';
+  // clear old rows so the screen never looks stale while a new filter loads
+  orders = []; $('#rows').innerHTML = ''; $('#pageInfo').textContent = '';
+  $('#prev').disabled = $('#next').disabled = $('#bulk').disabled = true;
+  $('#load').classList.add('on');
+  setEmpty('Loading orders…');
+  try {
+    const qs = new URLSearchParams({ view, f: JSON.stringify(activeFilters()) });
+    if ($('#search').value.trim()) qs.set('q', $('#search').value.trim());
+    if ($('#from').value) qs.set('from', $('#from').value);
+    if ($('#to').value) qs.set('to', $('#to').value);
+    if (fresh) qs.set('refresh', '1');
+    if (cursors[pageIdx]) qs.set('cursor', cursors[pageIdx]);
+    const [d, o] = await Promise.all([api('/api/orders?' + qs), fresh || !opts.loaded ? api('/api/filter-options').catch(() => null) : null]);
+    if (seq !== loadSeq) return; // a newer request replaced this one
+    if (o) { opts.disposition = o.disposition; opts.partner = o.partner; opts.loaded = true; }
+    orders = d.orders; hasNext = !!d.nextCursor; hidden = d.hidden; capped = d.capped;
+    cursors[pageIdx + 1] = d.nextCursor;
+    orders.forEach((x) => (known[x.orderId] = x));
+    if (!$('#from').value) { $('#from').value = d.from; $('#to').value = d.to; }
+    $('#warn').textContent = d.sheetWarning ? 'Disposition is unavailable right now: ' + d.sheetWarning : '';
+    loading = false;
+    render();
+    loadCouriers();
+  } catch (e) {
+    if (seq !== loadSeq) return;
+    loading = false;
+    if (e.message !== 'auth') setEmpty('Could not load orders: ' + e.message, true);
+  }
+  if (seq === loadSeq) $('#load').classList.remove('on');
+}
+
+function setEmpty(text, retry) {
+  const el = $('#empty');
+  el.style.display = 'block';
+  el.innerHTML = esc(text) + (retry ? '<div><button class="btn" id="retry">Try again</button></div>' : '');
+  if (retry) $('#retry').onclick = () => load();
+}
+
+// ---------- header + chips ----------
+function renderHead() {
+  $('#cols').innerHTML = COLS.map((c) => `<col style="width:${c.w}px">`).join('');
+  $('#head').innerHTML = COLS.map((c) => `<th class="${c.cls || ''}"><div class="th"><span>${esc(c.label)}</span>${c.type ? `<button class="fbtn ${isOn(c) ? 'on' : ''}" data-col="${c.key}" aria-label="Filter ${esc(c.label)}" aria-haspopup="dialog">${FUNNEL}</button>` : ''}</div></th>`).join('');
+}
+function renderChips() {
+  const chips = COLS.filter(isOn).map((c) => {
+    const v = F[c.key]; let t;
+    if (c.type === 'list') t = v.map((x) => (c.choices().find((o) => o.v === x)?.t ?? x)).join(', ');
+    else if (c.type === 'range') t = [v.min !== '' && v.min != null ? '≥ ' + v.min : '', v.max !== '' && v.max != null ? '≤ ' + v.max : ''].filter(Boolean).join(' and ');
+    else t = 'contains “' + v.trim() + '”';
+    return `<span class="chip">${esc(c.label)}: ${esc(t)}<button data-clear="${c.key}" aria-label="Remove ${esc(c.label)} filter">×</button></span>`;
+  });
+  $('#chips').innerHTML = chips.join('') + (chips.length > 1 ? '<button class="chip clear" id="clearAll">Clear all</button>' : '');
+}
+function refreshFilterUi() { renderHead(); renderChips(); }
+
+let timer;
+function filtersChanged() { refreshFilterUi(); clearTimeout(timer); timer = setTimeout(reload, 450); }
+function reload() { pageIdx = 0; cursors = [null]; load(); }
+
+// ---------- rows ----------
+function render() {
+  const list = orders;
+  const el = $('#empty');
+  if (!list.length) {
+    el.style.display = 'block';
+    const filtered = COLS.some(isOn) || $('#search').value.trim();
+    el.innerHTML = capped && hasNext
+      ? 'No matches in the orders checked so far.<div><button class="btn" id="keep">Keep searching</button></div>'
+      : filtered ? 'No orders match these filters.<div><button class="btn" id="resetF">Clear filters</button></div>'
+      : 'No orders in this date range.';
+    if ($('#keep')) $('#keep').onclick = () => { pageIdx++; load(); };
+    if ($('#resetF')) $('#resetF').onclick = clearAll;
+  } else el.style.display = 'none';
+
+  $('#rows').innerHTML = list.map((o) => {
+    const ready = isReady(o), cur = choice[o.orderId] ?? o.suggested ?? 'AUTO', n = notes[o.orderId];
+    const names = new Set([...(couriers[o.orderId] || []), ...(o.suggested ? [o.suggested] : []), ...(cur !== 'AUTO' ? [cur] : [])]);
+    const options = ['AUTO', ...[...names].sort()].map((p) => `<option value="${esc(p)}" ${p === cur ? 'selected' : ''}>${p === 'AUTO' ? 'Auto (Shiprocket)' : esc(p)}</option>`).join('');
+    return `<tr class="${selected.has(o.orderId) ? 'picked' : ''}">
+      <td class="stick c0">${ready ? `<input type="checkbox" class="sel" data-id="${o.orderId}" aria-label="Select order ${esc(o.channelOrderId)}" ${selected.has(o.orderId) ? 'checked' : ''}>` : ''}</td>
+      <td class="stick c1"><b>${esc(o.channelOrderId)}</b></td>
+      <td>${esc(o.placedAt).replace(', ', ',<br>')}</td>
+      <td>${esc(o.customer)}</td>
+      <td><div class="clamp" title="${esc(o.address)}">${esc(o.address)}</div></td>
+      <td>${esc(o.pincode)}</td>
+      <td><span class="tag ${esc(o.payment)}">${o.payment === 'cod' ? 'COD' : o.payment === 'prepaid' ? 'Prepaid' : esc(o.payment)}</span></td>
+      <td style="white-space:nowrap"><b>₹${esc(o.amount)}</b></td>
+      <td>${o.items.map((i) => `<div style="margin-bottom:4px">${esc(i.sku)}<div class="sub" title="${esc(i.name)}">${esc(i.name)}</div></div>`).join('')}</td>
+      <td>${o.items.map((i) => `<div style="margin-bottom:${i.name ? 20 : 4}px">${esc(i.qty)}</div>`).join('')}</td>
+      <td>${o.disposition === null ? '<span class="dim">Unavailable</span>' : o.disposition ? `<span class="tag">${esc(o.disposition)}</span>` : '<span class="dim">–</span>'}</td>
+      <td>${o.suggested ? `<span class="ok">${esc(o.suggested)}</span>` : '<span class="dim">No preference</span>'}</td>
+      <td>${ready ? `<select class="part" data-id="${o.orderId}" aria-label="Courier for order ${esc(o.channelOrderId)}">${options}</select>` : esc(o.courier || '')}</td>
+      <td><span class="tag">${esc(o.status)}</span>${o.awb ? `<div class="sub">AWB ${esc(o.awb)}</div>` : ''}${n ? `<div class="note ${n.ok ? 'ok' : 'bad'}">${esc(n.text)}</div>` : ''}</td>
+      <td class="stick cR">${ready ? `<button class="go one" data-id="${o.orderId}">Ship</button>` : ''}</td>
+    </tr>`;
+  }).join('');
+
+  $('#pageInfo').textContent = `Page ${pageIdx + 1} · ${orders.length} orders` + (hidden ? ` · ${hidden} filtered out` : '');
+  $('#prev').disabled = pageIdx <= 0; $('#next').disabled = !hasNext;
+  $('#bulk').textContent = `Ship selected (${selected.size})`;
+  $('#bulk').disabled = !selected.size;
+}
+
+// each ready order's serviceable couriers from Shiprocket, 3 at a time
+async function loadCouriers() {
+  const todo = orders.filter((o) => isReady(o) && !couriers[o.orderId]).map((o) => o.orderId);
+  const worker = async () => {
+    while (todo.length) {
+      const id = todo.shift();
+      try { couriers[id] = (await api('/api/couriers/' + id)).couriers; } catch (e) { couriers[id] = []; }
+      if (!loading && (!document.activeElement || document.activeElement.tagName !== 'SELECT')) render();
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+}
+
+async function ship(ids, btns) {
+  btns.forEach((b) => (b.disabled = true));
+  const items = ids.map((id) => ({ orderId: id, shipmentId: known[id].shipmentId, partner: choice[id] ?? known[id].suggested ?? 'AUTO' }));
+  try {
+    const { results } = await api('/api/ship', { method: 'POST', body: { items } });
+    for (const r of results) {
+      notes[r.orderId] = r.ok ? { ok: true, text: `Shipped via ${r.courier}` } : { ok: false, text: r.error };
+      selected.delete(r.orderId);
+    }
+    pageIdx = 0; cursors = [null];
+    await load();
+  } catch (e) { if (e.message !== 'auth') alert(e.message); }
+  btns.forEach((b) => (b.disabled = false));
+}
+
+// ---------- filter popover (like Google Sheets) ----------
+function closePop() { const p = $('#pop'); if (p) p.remove(); }
+function openPop(c, btn) {
+  closePop();
+  const pop = document.createElement('div');
+  pop.className = 'pop'; pop.id = 'pop'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', 'Filter ' + c.label);
+  const r = btn.getBoundingClientRect();
+  pop.style.top = r.bottom + 6 + 'px';
+  pop.style.left = Math.max(8, Math.min(r.left, innerWidth - 270)) + 'px';
+  let focusEl;
+
+  if (c.type === 'text') {
+    pop.innerHTML = `<h3>${esc(c.label)} contains</h3><input class="in" id="pt" value="${esc(F[c.key] || '')}" placeholder="Type to filter">`;
+    document.body.append(pop); focusEl = $('#pt');
+    focusEl.oninput = () => { F[c.key] = focusEl.value; filtersChanged(); };
+  } else if (c.type === 'range') {
+    const v = F[c.key] || {};
+    pop.innerHTML = `<h3>${esc(c.label)} between</h3><div class="row"><input class="in" id="pmin" type="number" min="0" placeholder="Min" value="${esc(v.min ?? '')}"><input class="in" id="pmax" type="number" min="0" placeholder="Max" value="${esc(v.max ?? '')}"></div>`;
+    document.body.append(pop); focusEl = $('#pmin');
+    const upd = () => { F[c.key] = { min: $('#pmin').value, max: $('#pmax').value }; filtersChanged(); };
+    $('#pmin').oninput = $('#pmax').oninput = upd;
+  } else {
+    pop.innerHTML = `<h3>Show only</h3><input class="in" id="ps" placeholder="Search values"><div class="links"><button id="pall">Select all</button><button id="pnone">Clear</button></div><div class="opts" id="po"></div><div class="hint">Nothing ticked means no filter.</div>`;
+    document.body.append(pop); focusEl = $('#ps');
+    const draw = () => {
+      const q = $('#ps').value.toLowerCase(), cur = F[c.key] || [];
+      $('#po').innerHTML = c.choices().filter((o) => o.t.toLowerCase().includes(q)).map((o) => `<label><input type="checkbox" value="${esc(o.v)}" ${cur.includes(o.v) ? 'checked' : ''}> ${esc(o.t)}</label>`).join('') || '<div class="dim">No values</div>';
+    };
+    draw();
+    $('#ps').oninput = draw;
+    $('#po').onchange = () => { F[c.key] = [...$('#po').querySelectorAll('input:checked')].map((i) => i.value); filtersChanged(); };
+    $('#pall').onclick = () => { F[c.key] = [...new Set([...(F[c.key] || []), ...[...$('#po').querySelectorAll('input')].map((i) => i.value)])]; draw(); filtersChanged(); };
+    $('#pnone').onclick = () => { F[c.key] = []; draw(); filtersChanged(); };
+  }
+  focusEl.focus();
+}
+document.addEventListener('click', (e) => { if (!e.target.closest('#pop') && !e.target.closest('.fbtn')) closePop(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePop(); });
+$('#wrap').addEventListener('scroll', closePop);
+
+function clearFilter(key) { delete F[key]; filtersChanged(); }
+function clearAll() { for (const k of Object.keys(F)) delete F[k]; $('#search').value = ''; closePop(); refreshFilterUi(); reload(); }
+
+// ---------- events ----------
+$('#head').addEventListener('click', (e) => {
+  const b = e.target.closest('.fbtn'); if (!b) return;
+  const c = COLS.find((x) => x.key === b.dataset.col);
+  if ($('#pop') && $('#pop').getAttribute('aria-label') === 'Filter ' + c.label) closePop(); else openPop(c, b);
+});
+$('#chips').addEventListener('click', (e) => {
+  if (e.target.dataset.clear) clearFilter(e.target.dataset.clear);
+  if (e.target.id === 'clearAll') clearAll();
+});
+$('#rows').addEventListener('change', (e) => {
+  const id = Number(e.target.dataset.id);
+  if (e.target.classList.contains('sel')) { e.target.checked ? selected.add(id) : selected.delete(id); render(); }
+  if (e.target.classList.contains('part')) choice[id] = e.target.value;
+});
+$('#rows').addEventListener('click', (e) => {
+  if (e.target.classList.contains('one')) ship([Number(e.target.dataset.id)], [e.target]);
+});
+$('#bulk').onclick = () => { if (confirm(`Ship ${selected.size} orders?`)) ship([...selected], [$('#bulk')]); };
+$('#views').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  view = b.dataset.v;
+  $('#views').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  reload();
+});
+$('#from').onchange = $('#to').onchange = reload;
+$('#search').oninput = () => { clearTimeout(timer); timer = setTimeout(reload, 450); };
+$('#prev').onclick = () => { pageIdx--; load(); };
+$('#next').onclick = () => { pageIdx++; load(); };
+$('#refresh').onclick = () => load(true);
+$('#loginBtn').onclick = async () => {
+  try { await api('/api/login', { method: 'POST', body: { password: $('#pw').value } }); load(); }
+  catch (e) { $('#loginErr').textContent = e.message === 'Wrong password' ? 'Wrong password. Check DASHBOARD_PASSWORD in .env.' : e.message; }
+};
+$('#pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#loginBtn').click(); });
+
+refreshFilterUi();
+load();
+</script>
+</body>
+</html>

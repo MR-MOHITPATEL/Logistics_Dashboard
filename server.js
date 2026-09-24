@@ -169,7 +169,15 @@ async function shipOne({ orderId, shipmentId, partner }) {
   if (r.awb_assign_status === 0) throw new Error(r.message || 'AWB assignment failed');
   let pickup = 'requested';
   try { await sr.generatePickup(shipmentId); } catch (e) { pickup = `pickup failed: ${e.message}`; }
-  return { courier: pick.courier_name, awb: r?.response?.data?.awb_code, pickup };
+  let awb = r?.response?.data?.awb_code;
+  if (!awb) { // fall back to reading the order back from Shiprocket
+    try {
+      const d = await sr.api(`/orders/show/${orderId}`);
+      const sh = d?.data?.shipments;
+      awb = (Array.isArray(sh) ? sh[0] : sh)?.awb || d?.data?.awb_data?.awb || null;
+    } catch (e) { /* AWB is still on the order in Shiprocket */ }
+  }
+  return { courier: pick.courier_name, awb: awb || null, pickup };
 }
 
 app.post('/api/ship', async (req, res) => {

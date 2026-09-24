@@ -86,6 +86,15 @@
   .go:disabled{opacity:.45}
   input[type=checkbox]{width:16px;height:16px;accent-color:var(--signal);cursor:pointer}
 
+  #shipped{margin:12px 20px 0;padding:12px 14px;background:var(--go-soft);border:1px solid #B7DEC8;border-radius:8px}
+  #shipped.hasfail{background:var(--surface);border-color:var(--line-strong)}
+  #shipped .hd{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  #shipped .hd b{margin-right:auto}
+  #shipped .hd button{border:0;background:none;color:var(--signal);font-weight:500;padding:0}
+  #shipped .ln{padding:3px 0;display:flex;gap:10px;flex-wrap:wrap}
+  #shipped .ln .no{font-weight:600;min-width:64px}
+  #shipped .awb{font-weight:600;user-select:all}
+  #shipped .bad{color:var(--stop)}
   .empty{padding:44px 20px;text-align:center;color:var(--mute)}
   .empty .btn{margin-top:12px}
   #pager{display:flex;gap:14px;align-items:center;justify-content:center;padding:0 20px 28px;color:var(--mute)}
@@ -135,6 +144,7 @@
     <label class="fld">To <input class="in" type="date" id="to"></label>
     <input class="in" id="search" placeholder="Search name, order, pin, SKU" aria-label="Search">
   </div>
+  <div id="shipped" style="display:none" aria-live="polite"></div>
   <div id="chips"></div>
   <div id="load"></div>
 
@@ -330,13 +340,32 @@ async function ship(ids, btns) {
   try {
     const { results } = await api('/api/ship', { method: 'POST', body: { items } });
     for (const r of results) {
-      notes[r.orderId] = r.ok ? { ok: true, text: `Shipped via ${r.courier}` } : { ok: false, text: r.error };
+      notes[r.orderId] = r.ok ? { ok: true, text: `Shipped via ${r.courier}` + (r.awb ? ` · AWB ${r.awb}` : '') } : { ok: false, text: r.error };
       selected.delete(r.orderId);
     }
+    showShipped(results);
     pageIdx = 0; cursors = [null];
     await load();
   } catch (e) { if (e.message !== 'auth') alert(e.message); }
   btns.forEach((b) => (b.disabled = false));
+}
+
+// stays on screen after shipping, because shipped orders leave the Ready to ship list
+function showShipped(results) {
+  const box = $('#shipped');
+  const done = results.filter((r) => r.ok), failed = results.filter((r) => !r.ok);
+  const no = (r) => esc(known[r.orderId]?.channelOrderId ?? r.orderId);
+  box.className = failed.length ? 'hasfail' : '';
+  box.style.display = 'block';
+  box.innerHTML = `<div class="hd"><b>${done.length} shipped${failed.length ? `, ${failed.length} failed` : ''}</b>` +
+    (done.some((r) => r.awb) ? '<button id="copyAwb">Copy AWBs</button>' : '') + '<button id="hideShipped">Dismiss</button></div>' +
+    done.map((r) => `<div class="ln"><span class="no">${no(r)}</span><span>${esc(r.courier)}</span>${r.awb ? `<span>AWB <span class="awb">${esc(r.awb)}</span></span>` : '<span class="dim">AWB not returned yet, check Shiprocket</span>'}${String(r.pickup).startsWith('pickup failed') ? `<span class="bad">${esc(r.pickup)}</span>` : ''}</div>`).join('') +
+    failed.map((r) => `<div class="ln"><span class="no">${no(r)}</span><span class="bad">${esc(r.error)}</span></div>`).join('');
+  $('#hideShipped').onclick = () => (box.style.display = 'none');
+  if ($('#copyAwb')) $('#copyAwb').onclick = () => {
+    const text = done.filter((r) => r.awb).map((r) => (known[r.orderId]?.channelOrderId ?? r.orderId) + '\t' + r.awb).join('\n');
+    navigator.clipboard?.writeText(text).then(() => ($('#copyAwb').textContent = 'Copied'));
+  };
 }
 
 // ---------- filter popover (like Google Sheets) ----------

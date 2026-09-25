@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const sr = require('./shiprocket');
 const sheets = require('./sheets');
+const history = require('./history');
 
 const app = express();
 app.use(express.json());
@@ -184,11 +185,50 @@ app.post('/api/ship', async (req, res) => {
   const items = Array.isArray(req.body.items) ? req.body.items : [];
   const results = [];
   for (const it of items) { // sequential to respect Shiprocket rate limits
-    try { results.push({ orderId: it.orderId, ok: true, ...(await shipOne(it)) }); }
-    catch (e) { results.push({ orderId: it.orderId, ok: false, error: e.message }); }
+    const m = it.meta || {};
+    const base = {
+      orderId: it.orderId, orderNo: m.orderNo, shipmentId: it.shipmentId, customer: m.customer, pincode: m.pincode,
+      payment: m.payment, amount: m.amount, requested: it.partner === 'AUTO' ? null : it.partner, suggested: m.suggested || null,
+    };
+    let r;
+    try { r = { orderId: it.orderId, ok: true, ...(await shipOne(it)) }; }
+    catch (e) { r = { orderId: it.orderId, ok: false, error: e.message }; }
+    try { await history.add({ ...base, courier: r.courier || null, awb: r.awb || null, pickup: r.pickup || null, ok: r.ok, error: r.error || null }); }
+    catch (e) { r.historySaved = false; console.error('history save failed:', e.message); } // shipping already happened; just tell the user
+    results.push(r);
   }
   res.json({ results });
 });
 
+// ---------- shipping history ----------
+const IST = '+05:30';
+function historyFilters(q) {
+  const f = { q: String(q.q || '').trim(), result: ['ok', 'failed'].includes(q.result) ? q.result : '', courier: String(q.courier || ''), payment: ['cod', 'prepaid'].includes(q.payment) ? q.payment : '' };
+  if (DAY.test(q.from)) f.from = new Date(`${q.from}T00:00:00.000${IST}`).toISOString();
+  if (DAY.test(q.to)) f.to = new Date(`${q.to}T23:59:59.999${IST}`).toISOString();
+  return f;
+}
+app.get('/api/history', async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1), size = 50;
+    const r = await history.list({ ...historyFilters(req.query), limit: size, offset: (page - 1) * size });
+    res.json({ ...r, page, size, totalPages: Math.max(1, Math.ceil(r.total / size)), storage: history.storage() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/api/history.csv', async (req, res) => {
+  try {
+    const { rows } = await history.list({ ...historyFilters(req.query), limit: null });
+    const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const when = (iso) => new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+    const head = ['Shipped at (IST)', 'Order', 'Customer', 'Pin', 'Payment', 'Amount', 'Courier', 'Suggested partner', 'AWB', 'Pickup', 'Result', 'Error'];
+    const lines = rows.map((r) => [when(r.shippedAt), r.orderNo, r.customer, r.pincode, r.payment, r.amount, r.courier, r.suggested, r.awb, r.pickup, r.ok ? 'Shipped' : 'Failed', r.error].map(cell).join(','));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="shipping-history.csv"');
+    res.send('\ufeff' + [head.map(cell).join(','), ...lines].join('\r\n'));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
-app.listen(process.env.PORT || 3000, () => console.log('Dashboard on :' + (process.env.PORT || 3000)));
+history.init()
+  .catch((e) => console.error('History database unavailable, using a local file instead:', e.message))
+  .finally(() => app.listen(process.env.PORT || 3000, () => console.log('Dashboard on :' + (process.env.PORT || 3000) + ' | history stored in ' + history.storage())));

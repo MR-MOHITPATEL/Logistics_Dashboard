@@ -23,8 +23,13 @@
   :focus-visible{outline:2px solid var(--signal);outline-offset:2px}
 
   /* top bar */
-  .top{display:flex;align-items:center;gap:12px;padding:12px 20px;background:var(--surface);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:30}
-  .top h1{font-size:18px;font-weight:600;margin:0 auto 0 0;letter-spacing:-.01em}
+  .top{display:flex;align-items:center;gap:12px;padding:12px 20px;min-height:61px;background:var(--surface);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:30}
+  .top h1{font-size:18px;font-weight:600;margin:0 22px 0 0;letter-spacing:-.01em}
+  .top .grow{flex:1}
+  .nav{display:flex;gap:4px;align-self:stretch;margin:-12px 0}
+  .nav a{display:flex;align-items:center;padding:0 14px;color:var(--mute);font-weight:500;text-decoration:none;border-bottom:3px solid transparent;margin-bottom:-1px}
+  .nav a:hover{color:var(--ink)}
+  .nav a[aria-current=page]{color:var(--ink);font-weight:600;border-bottom-color:var(--signal)}
   .btn{padding:7px 14px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface);font-weight:500}
   .btn:hover:not(:disabled){border-color:var(--ink)}
   .btn:disabled{opacity:.45;cursor:default}
@@ -41,16 +46,17 @@
   .in{padding:6px 9px;border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface);min-width:0}
   .in:focus{border-color:var(--ink);outline:none}
   #search{width:230px}
+  #hSearch{width:270px}
   #chips{display:flex;flex-wrap:wrap;gap:8px;padding:10px 20px 0;min-height:38px}
   .chip{display:inline-flex;align-items:center;gap:6px;padding:3px 6px 3px 10px;border-radius:99px;background:var(--signal-soft);border:1px solid #F2C6AA;font-size:13px}
   .chip button{border:0;background:none;padding:0 4px;font-size:16px;line-height:1;color:var(--signal)}
   .chip.clear{background:none;border:0;color:var(--mute);text-decoration:underline;padding:3px 4px;cursor:pointer}
 
   /* progress bar while loading */
-  #load{height:2px;margin-top:12px;background:transparent;overflow:hidden}
-  #load.on::after{content:"";display:block;height:100%;width:30%;background:var(--signal);animation:slide 1s ease-in-out infinite}
+  #load,#hLoad{height:2px;margin-top:12px;background:transparent;overflow:hidden}
+  #load.on::after,#hLoad.on::after{content:"";display:block;height:100%;width:30%;background:var(--signal);animation:slide 1s ease-in-out infinite}
   @keyframes slide{from{transform:translateX(-100%)}to{transform:translateX(340%)}}
-  @media (prefers-reduced-motion:reduce){#load.on::after{animation:none;width:100%;opacity:.5}}
+  @media (prefers-reduced-motion:reduce){#load.on::after,#hLoad.on::after{animation:none;width:100%;opacity:.5}}
 
   /* table */
   .wrap{margin:0 20px 20px;background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:auto;max-height:calc(100vh - 230px)}
@@ -76,6 +82,8 @@
   .sub{font-size:12px;color:var(--mute);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;max-width:190px}
   .tag{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:500;border:1px solid var(--line-strong);background:var(--surface)}
   .tag.cod{background:var(--signal-soft);border-color:#F2C6AA;color:#8F3407}
+  .tag.shipped{background:var(--go-soft);border-color:#B7DEC8;color:#0F5A36}
+  .tag.failed{background:var(--stop-soft);border-color:#F1B9B4;color:var(--stop)}
   .tag.prepaid{background:var(--go-soft);border-color:#B7DEC8;color:#0F5A36}
   .ok{color:var(--go);font-weight:500}
   .dim{color:var(--mute)}
@@ -95,6 +103,11 @@
   #shipped .ln .no{font-weight:600;min-width:64px}
   #shipped .awb{font-weight:600;user-select:all}
   #shipped .bad{color:var(--stop)}
+  #shipped .hd a{color:var(--signal);font-weight:500;text-decoration:none}
+  #shipped .hd a:hover{text-decoration:underline}
+  #hist table{min-width:1240px}
+  #hist .awb{font-weight:600;user-select:all}
+  #histWarn{margin:12px 20px 0;padding:10px 14px;border:1px solid #F1D08A;background:#FFF6DD;border-radius:8px;display:none}
   .empty{padding:44px 20px;text-align:center;color:var(--mute)}
   .empty .btn{margin-top:12px}
   #pager{display:flex;gap:14px;align-items:center;justify-content:center;padding:0 20px 28px;color:var(--mute)}
@@ -130,10 +143,18 @@
 <div id="app" style="display:none">
   <div class="top">
     <h1>Logistics Dashboard</h1>
-    <button class="btn" id="refresh">Refresh</button>
-    <button class="btn ship" id="bulk" disabled>Ship selected (0)</button>
+    <nav class="nav" aria-label="Pages">
+      <a href="#/orders" id="navOrders" aria-current="page">Orders</a>
+      <a href="#/history" id="navHistory">Shipping history</a>
+    </nav>
+    <div class="grow"></div>
+    <div id="orderActions" style="display:flex;gap:12px">
+      <button class="btn" id="refresh">Refresh</button>
+      <button class="btn ship" id="bulk" disabled>Ship selected (0)</button>
+    </div>
   </div>
 
+  <div id="ordersPage">
   <div class="bar">
     <div class="seg" id="views" role="group" aria-label="Order view">
       <button data-v="ready" aria-pressed="true">Ready to ship</button>
@@ -158,6 +179,37 @@
   </div>
   <div id="warn"></div>
   <div id="pager"><button class="btn" id="prev">Previous</button><span id="pageInfo"></span><button class="btn" id="next">Next</button></div>
+  </div>
+
+  <div id="hist" style="display:none">
+    <div id="histWarn"></div>
+    <div class="bar">
+      <div class="seg" id="hResult" role="group" aria-label="Result">
+        <button data-r="all" aria-pressed="true">All</button>
+        <button data-r="ok" aria-pressed="false">Shipped</button>
+        <button data-r="failed" aria-pressed="false">Failed</button>
+      </div>
+      <label class="fld">From <input class="in" type="date" id="hFrom"></label>
+      <label class="fld">To <input class="in" type="date" id="hTo"></label>
+      <input class="in" id="hSearch" placeholder="Search order, customer, AWB, pin" aria-label="Search history">
+      <select class="in" id="hCourier" aria-label="Courier"><option value="">All couriers</option></select>
+      <select class="in" id="hPay" aria-label="Payment"><option value="">All payments</option><option value="cod">COD</option><option value="prepaid">Prepaid</option></select>
+      <button class="btn" id="hExport" style="margin-left:auto">Export CSV</button>
+    </div>
+    <div id="hLoad" style="margin-top:12px"></div>
+    <div class="wrap" style="margin-top:0">
+      <table>
+        <thead><tr>
+          <th><div class="th">Shipped at</div></th><th><div class="th">Order</div></th><th><div class="th">Customer</div></th><th><div class="th">Pin</div></th>
+          <th><div class="th">Payment</div></th><th><div class="th">Amount</div></th><th><div class="th">Courier</div></th><th><div class="th">Suggested partner</div></th>
+          <th><div class="th">AWB</div></th><th><div class="th">Pickup</div></th><th><div class="th">Result</div></th>
+        </tr></thead>
+        <tbody id="hRows"></tbody>
+      </table>
+      <div class="empty" id="hEmpty" style="display:none"></div>
+    </div>
+    <div id="hPager" style="display:flex;gap:14px;align-items:center;justify-content:center;padding:0 20px 28px;color:var(--mute)"><button class="btn" id="hPrev">Previous</button><span id="hInfo"></span><button class="btn" id="hNext">Next</button></div>
+  </div>
 </div>
 
 <script>
@@ -216,6 +268,7 @@ function activeFilters() {
 let loadSeq = 0;
 async function load(fresh = false) {
   const seq = ++loadSeq;
+  ordersLoaded = true;
   loading = true;
   $('#login').style.display = 'none'; $('#app').style.display = 'block';
   // clear old rows so the screen never looks stale while a new filter loads
@@ -336,7 +389,11 @@ async function loadCouriers() {
 
 async function ship(ids, btns) {
   btns.forEach((b) => (b.disabled = true));
-  const items = ids.map((id) => ({ orderId: id, shipmentId: known[id].shipmentId, partner: choice[id] ?? known[id].suggested ?? 'AUTO' }));
+  const items = ids.map((id) => {
+    const o = known[id];
+    return { orderId: id, shipmentId: o.shipmentId, partner: choice[id] ?? o.suggested ?? 'AUTO',
+      meta: { orderNo: o.channelOrderId, customer: o.customer, pincode: o.pincode, payment: o.payment, amount: o.amount, suggested: o.suggested } };
+  });
   try {
     const { results } = await api('/api/ship', { method: 'POST', body: { items } });
     for (const r of results) {
@@ -358,7 +415,8 @@ function showShipped(results) {
   box.className = failed.length ? 'hasfail' : '';
   box.style.display = 'block';
   box.innerHTML = `<div class="hd"><b>${done.length} shipped${failed.length ? `, ${failed.length} failed` : ''}</b>` +
-    (done.some((r) => r.awb) ? '<button id="copyAwb">Copy AWBs</button>' : '') + '<button id="hideShipped">Dismiss</button></div>' +
+    (done.some((r) => r.awb) ? '<button id="copyAwb">Copy AWBs</button>' : '') + '<a href="#/history">Shipping history</a><button id="hideShipped">Dismiss</button></div>' +
+    (results.some((r) => r.historySaved === false) ? '<div class="ln bad">Shipped, but not saved to shipping history. Copy the AWBs from here before dismissing.</div>' : '') +
     done.map((r) => `<div class="ln"><span class="no">${no(r)}</span><span>${esc(r.courier)}</span>${r.awb ? `<span>AWB <span class="awb">${esc(r.awb)}</span></span>` : '<span class="dim">AWB not returned yet, check Shiprocket</span>'}${String(r.pickup).startsWith('pickup failed') ? `<span class="bad">${esc(r.pickup)}</span>` : ''}</div>`).join('') +
     failed.map((r) => `<div class="ln"><span class="no">${no(r)}</span><span class="bad">${esc(r.error)}</span></div>`).join('');
   $('#hideShipped').onclick = () => (box.style.display = 'none');
@@ -442,13 +500,103 @@ $('#prev').onclick = () => { pageIdx--; load(); };
 $('#next').onclick = () => { pageIdx++; load(); };
 $('#refresh').onclick = () => load(true);
 $('#loginBtn').onclick = async () => {
-  try { await api('/api/login', { method: 'POST', body: { password: $('#pw').value } }); load(); }
+  try { await api('/api/login', { method: 'POST', body: { password: $('#pw').value } }); onHistory() ? loadHistory() : load(); }
   catch (e) { $('#loginErr').textContent = e.message === 'Wrong password' ? 'Wrong password. Check DASHBOARD_PASSWORD in .env.' : e.message; }
 };
 $('#pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#loginBtn').click(); });
 
+// ---------- pages: Orders and Shipping history ----------
+const istDay = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d);
+const onHistory = () => location.hash === '#/history';
+let ordersLoaded = false, hPage = 1, hResult = 'all', hSeq = 0;
+
+function showPage() {
+  const h = onHistory();
+  $('#ordersPage').style.display = h ? 'none' : '';
+  $('#hist').style.display = h ? '' : 'none';
+  $('#orderActions').style.display = h ? 'none' : 'flex';
+  $('#navOrders').setAttribute('aria-current', h ? 'false' : 'page');
+  $('#navHistory').setAttribute('aria-current', h ? 'page' : 'false');
+  closePop();
+  if (h) {
+    if (!$('#hFrom').value) { $('#hTo').value = istDay(new Date()); $('#hFrom').value = istDay(new Date(Date.now() - 30 * 864e5)); }
+    hPage = 1; loadHistory();
+  } else if (!ordersLoaded) load();
+}
+window.addEventListener('hashchange', showPage);
+
+function histQs() {
+  const qs = new URLSearchParams();
+  if ($('#hFrom').value) qs.set('from', $('#hFrom').value);
+  if ($('#hTo').value) qs.set('to', $('#hTo').value);
+  if ($('#hSearch').value.trim()) qs.set('q', $('#hSearch').value.trim());
+  if ($('#hCourier').value) qs.set('courier', $('#hCourier').value);
+  if ($('#hPay').value) qs.set('payment', $('#hPay').value);
+  if (hResult !== 'all') qs.set('result', hResult);
+  return qs;
+}
+const fmtWhen = (iso) => new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+async function loadHistory() {
+  const seq = ++hSeq;
+  $('#login').style.display = 'none'; $('#app').style.display = 'block';
+  $('#hRows').innerHTML = ''; $('#hInfo').textContent = '';
+  $('#hPrev').disabled = $('#hNext').disabled = true;
+  $('#hLoad').classList.add('on');
+  const empty = $('#hEmpty'); empty.style.display = 'block'; empty.textContent = 'Loading history…';
+  try {
+    const qs = histQs(); qs.set('page', hPage);
+    const d = await api('/api/history?' + qs);
+    if (seq !== hSeq) return;
+    const cur = $('#hCourier').value;
+    $('#hCourier').innerHTML = '<option value="">All couriers</option>' + d.couriers.map((c) => `<option ${c === cur ? 'selected' : ''}>${esc(c)}</option>`).join('');
+    const w = $('#histWarn');
+    const temp = d.storage === 'file' && !['localhost', '127.0.0.1'].includes(location.hostname);
+    w.style.display = temp ? 'block' : 'none';
+    w.textContent = temp ? 'History is saved to a temporary file and will be lost the next time the app redeploys. Add a Postgres database in Railway to keep it.' : '';
+    $('#hRows').innerHTML = d.rows.map((r) => {
+      const followed = r.suggested && r.courier && r.courier.toLowerCase().includes(r.suggested.toLowerCase());
+      return `<tr>
+        <td>${esc(fmtWhen(r.shippedAt)).replace(', ', ',<br>')}</td>
+        <td><b>${esc(r.orderNo)}</b></td>
+        <td>${esc(r.customer)}</td>
+        <td>${esc(r.pincode)}</td>
+        <td><span class="tag ${esc(r.payment)}">${r.payment === 'cod' ? 'COD' : r.payment === 'prepaid' ? 'Prepaid' : esc(r.payment || '')}</span></td>
+        <td style="white-space:nowrap"><b>₹${esc(r.amount ?? '')}</b></td>
+        <td>${esc(r.courier || '')}</td>
+        <td>${r.suggested ? `<span class="${followed ? 'ok' : ''}">${esc(r.suggested)}</span><div class="sub">${r.ok ? (followed ? 'Used as suggested' : 'Changed') : ''}</div>` : '<span class="dim">No preference</span>'}</td>
+        <td>${r.awb ? `<span class="awb">${esc(r.awb)}</span>` : '<span class="dim">–</span>'}</td>
+        <td>${esc(r.pickup || '')}</td>
+        <td><span class="tag ${r.ok ? 'shipped' : 'failed'}">${r.ok ? 'Shipped' : 'Failed'}</span>${r.error ? `<div class="note bad">${esc(r.error)}</div>` : ''}</td>
+      </tr>`;
+    }).join('');
+    const filtered = qs.has('q') || qs.has('courier') || qs.has('payment') || qs.has('result');
+    empty.style.display = d.rows.length ? 'none' : 'block';
+    empty.textContent = filtered ? 'No shipments match these filters.' : 'No shipments in this date range. Orders you ship from this dashboard appear here.';
+    $('#hInfo').textContent = `Page ${d.page} of ${d.totalPages} · ${d.total} shipments`;
+    $('#hPrev').disabled = d.page <= 1; $('#hNext').disabled = d.page >= d.totalPages;
+  } catch (e) {
+    if (seq !== hSeq) return;
+    if (e.message !== 'auth') { $('#hEmpty').style.display = 'block'; $('#hEmpty').textContent = 'Could not load history: ' + e.message; }
+  }
+  if (seq === hSeq) $('#hLoad').classList.remove('on');
+}
+let hTimer;
+const hReload = () => { hPage = 1; loadHistory(); };
+$('#hSearch').oninput = () => { clearTimeout(hTimer); hTimer = setTimeout(hReload, 400); };
+$('#hFrom').onchange = $('#hTo').onchange = $('#hCourier').onchange = $('#hPay').onchange = hReload;
+$('#hResult').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  hResult = b.dataset.r;
+  $('#hResult').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  hReload();
+});
+$('#hPrev').onclick = () => { hPage--; loadHistory(); };
+$('#hNext').onclick = () => { hPage++; loadHistory(); };
+$('#hExport').onclick = () => { location.href = '/api/history.csv?' + histQs(); };
+
 refreshFilterUi();
-load();
+showPage();
 </script>
 </body>
 </html>

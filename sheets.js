@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 
 let token = null, tokenExp = 0;
-let cache = { at: 0, map: new Map() };
+let cache = { at: 0, map: new Map(), phones: new Map() };
 const TTL = 20 * 1000; // paging/courier lookups reuse the sheet for 20s; Refresh bypasses this
 
 function loadKey() {
@@ -44,12 +44,26 @@ async function dispositions(force = false) {
   if (d.error) throw new Error('Google Sheets: ' + d.error.message);
   const [head = [], ...rows] = d.values || [];
   const col = (name) => head.findIndex((h) => String(h).trim().toLowerCase() === name);
-  const idCol = col('order_id'), dispCol = col('disposition');
+  const idCol = col('order_id'), dispCol = col('disposition'), phoneCol = col('phone');
   if (idCol < 0 || dispCol < 0) throw new Error('Sheet is missing an Order_ID or Disposition column');
-  const map = new Map();
-  for (const r of rows) if (r[idCol]) map.set(norm(r[idCol]), String(r[dispCol] ?? '').trim()); // later rows win
-  cache = { at: Date.now(), map };
+  const map = new Map(), phones = new Map();
+  for (const r of rows) {
+    if (!r[idCol]) continue;
+    map.set(norm(r[idCol]), String(r[dispCol] ?? '').trim()); // later rows win
+    const ph = phoneCol >= 0 ? String(r[phoneCol] ?? '').replace(/\D/g, '').slice(-10) : '';
+    if (ph.length === 10) phones.set(norm(r[idCol]), ph);
+  }
+  cache = { at: Date.now(), map, phones };
   return map;
 }
 
-module.exports = { dispositions, norm };
+// customer phone for an order, read from the sheet (Shiprocket masks phone numbers in its API). '' when not there yet.
+async function phoneFor(orderNo) {
+  await dispositions(false);
+  const p = cache.phones.get(norm(orderNo));
+  if (p) return p;
+  await dispositions(true); // maybe the row was added a moment ago
+  return cache.phones.get(norm(orderNo)) || '';
+}
+
+module.exports = { dispositions, phoneFor, norm };

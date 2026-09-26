@@ -60,7 +60,7 @@
 
   /* table */
   .wrap{margin:0 20px 20px;background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:auto;max-height:calc(100vh - 230px)}
-  table{border-collapse:separate;border-spacing:0;table-layout:fixed;width:100%;min-width:1780px}
+  table{border-collapse:separate;border-spacing:0;table-layout:fixed;width:100%;min-width:1830px}
   th{position:sticky;top:0;z-index:5;background:var(--head);text-align:left;font-weight:600;font-size:13px;padding:0;border-bottom:1px solid var(--line-strong);white-space:nowrap}
   .th{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:9px 8px 9px 10px}
   .fbtn{display:grid;place-items:center;width:24px;height:24px;border:0;border-radius:4px;background:none;color:var(--mute)}
@@ -75,6 +75,7 @@
   tbody tr:hover td.stick{background:#FAFAF8}
   tbody tr.picked td.stick{background:var(--sel)}
   .c0{left:0}
+  th.c0 .th{justify-content:center;padding:9px 0}
   .c1{left:44px;border-right:1px solid var(--line)}
   .cR{right:0;border-left:1px solid var(--line-strong)}
   td.c0{text-align:center}
@@ -83,7 +84,10 @@
   .tag{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:500;border:1px solid var(--line-strong);background:var(--surface)}
   .tag.cod{background:var(--signal-soft);border-color:#F2C6AA;color:#8F3407}
   .tag.shipped{background:var(--go-soft);border-color:#B7DEC8;color:#0F5A36}
+  .tag.cancelled{background:#EEF0F2;border-color:#C6CDD3;color:#4A5561}
   .tag.failed{background:var(--stop-soft);border-color:#F1B9B4;color:var(--stop)}
+  .tag.nimbus{background:#EAF0FB;border-color:#BCCBEA;color:#23408A}
+  td select.plat{display:block;margin-bottom:6px;font-size:12px;padding:3px 6px}
   .tag.prepaid{background:var(--go-soft);border-color:#B7DEC8;color:#0F5A36}
   .ok{color:var(--go);font-weight:500}
   .dim{color:var(--mute)}
@@ -105,7 +109,7 @@
   #shipped .bad{color:var(--stop)}
   #shipped .hd a{color:var(--signal);font-weight:500;text-decoration:none}
   #shipped .hd a:hover{text-decoration:underline}
-  #hist table{min-width:1240px}
+  #hist table{min-width:1460px}
   #hist .awb{font-weight:600;user-select:all}
   #histWarn{margin:12px 20px 0;padding:10px 14px;border:1px solid #F1D08A;background:#FFF6DD;border-radius:8px;display:none}
   .empty{padding:44px 20px;text-align:center;color:var(--mute)}
@@ -148,7 +152,13 @@
       <a href="#/history" id="navHistory">Shipping history</a>
     </nav>
     <div class="grow"></div>
-    <div id="orderActions" style="display:flex;gap:12px">
+    <div id="orderActions" style="display:flex;gap:12px;align-items:center">
+      <span class="fld">Ship via</span>
+      <div class="seg" id="platSeg" role="group" aria-label="Shipping platform for all orders">
+        <button data-p="shiprocket" aria-pressed="true">Shiprocket</button>
+        <button data-p="nimbus" aria-pressed="false">Nimbus</button>
+      </div>
+      <button class="btn" id="selAll" disabled>Select all</button>
       <button class="btn" id="refresh">Refresh</button>
       <button class="btn ship" id="bulk" disabled>Ship selected (0)</button>
     </div>
@@ -188,10 +198,12 @@
         <button data-r="all" aria-pressed="true">All</button>
         <button data-r="ok" aria-pressed="false">Shipped</button>
         <button data-r="failed" aria-pressed="false">Failed</button>
+        <button data-r="cancelled" aria-pressed="false">Cancelled</button>
       </div>
       <label class="fld">From <input class="in" type="date" id="hFrom"></label>
       <label class="fld">To <input class="in" type="date" id="hTo"></label>
       <input class="in" id="hSearch" placeholder="Search order, customer, AWB, pin" aria-label="Search history">
+      <select class="in" id="hPlat" aria-label="Platform"><option value="">All platforms</option><option value="shiprocket">Shiprocket</option><option value="nimbus">Nimbus</option></select>
       <select class="in" id="hCourier" aria-label="Courier"><option value="">All couriers</option></select>
       <select class="in" id="hPay" aria-label="Payment"><option value="">All payments</option><option value="cod">COD</option><option value="prepaid">Prepaid</option></select>
       <button class="btn" id="hExport" style="margin-left:auto">Export CSV</button>
@@ -200,9 +212,9 @@
     <div class="wrap" style="margin-top:0">
       <table>
         <thead><tr>
-          <th><div class="th">Shipped at</div></th><th><div class="th">Order</div></th><th><div class="th">Customer</div></th><th><div class="th">Pin</div></th>
+          <th><div class="th">Shipped at</div></th><th><div class="th">Platform</div></th><th><div class="th">Order</div></th><th><div class="th">Customer</div></th><th><div class="th">Pin</div></th>
           <th><div class="th">Payment</div></th><th><div class="th">Amount</div></th><th><div class="th">Courier</div></th><th><div class="th">Suggested partner</div></th>
-          <th><div class="th">AWB</div></th><th><div class="th">Pickup</div></th><th><div class="th">Result</div></th>
+          <th><div class="th">AWB</div></th><th><div class="th">Pickup</div></th><th><div class="th">Result</div></th><th><div class="th"></div></th>
         </tr></thead>
         <tbody id="hRows"></tbody>
       </table>
@@ -223,6 +235,17 @@ const known = {};            // orderId -> order, across pages (bulk select surv
 const couriers = {};         // orderId -> couriers Shiprocket says can serve the order
 const selected = new Set();
 const choice = {};           // orderId -> partner picked in the dropdown
+let defaultPlatform = 'shiprocket';   // what "Ship via" at the top is set to
+const platformChoice = {};   // orderId -> platform picked on that row (overrides the top setting)
+const nimbusOpts = {};       // orderId -> { list: [{value,label}], preselect } or { error }
+const platformOf = (o) => platformChoice[o.orderId] ?? defaultPlatform;
+const platName = (p) => (p === 'nimbus' ? 'Nimbus' : 'Shiprocket');
+// the partner sent when shipping: the row's pick, else the pin code suggestion (mapped to a Nimbus option when shipping via Nimbus)
+function partnerFor(o) {
+  if (choice[o.orderId] !== undefined) return choice[o.orderId];
+  if (platformOf(o) === 'nimbus') return nimbusOpts[o.orderId]?.preselect ?? o.suggested ?? 'AUTO';
+  return o.suggested ?? 'AUTO';
+}
 const notes = {};            // orderId -> {ok,text}
 const opts = { disposition: [], partner: [] };
 const F = {};                // column filters: key -> array (list) | {min,max} (range) | string (text)
@@ -241,7 +264,7 @@ const COLS = [
   { key: 'qty', label: 'Qty', type: 'range', w: 70 },
   { key: 'disposition', label: 'Disposition', type: 'list', choices: () => [{ v: '', t: '(Blank)' }, ...opts.disposition.map((v) => ({ v, t: v }))], w: 120 },
   { key: 'partner', label: 'Suggested partner', type: 'list', choices: () => [{ v: '', t: 'No preference' }, ...opts.partner.map((v) => ({ v, t: v }))], w: 185 },
-  { key: 'use', label: 'Use partner', w: 170 },
+  { key: 'use', label: 'Ship via and partner', w: 220 },
   { key: 'status', label: 'Status', w: 100 },
   { key: 'act', label: '', cls: 'stick cR', w: 84 },
 ];
@@ -312,7 +335,7 @@ function setEmpty(text, retry) {
 // ---------- header + chips ----------
 function renderHead() {
   $('#cols').innerHTML = COLS.map((c) => `<col style="width:${c.w}px">`).join('');
-  $('#head').innerHTML = COLS.map((c) => `<th class="${c.cls || ''}"><div class="th"><span>${esc(c.label)}</span>${c.type ? `<button class="fbtn ${isOn(c) ? 'on' : ''}" data-col="${c.key}" aria-label="Filter ${esc(c.label)}" aria-haspopup="dialog">${FUNNEL}</button>` : ''}</div></th>`).join('');
+  $('#head').innerHTML = COLS.map((c) => `<th class="${c.cls || ''}"><div class="th">${c.key === 'pick' ? '<input type="checkbox" id="selAllBox" aria-label="Select all orders on this page">' : `<span>${esc(c.label)}</span>`}${c.type ? `<button class="fbtn ${isOn(c) ? 'on' : ''}" data-col="${c.key}" aria-label="Filter ${esc(c.label)}" aria-haspopup="dialog">${FUNNEL}</button>` : ''}</div></th>`).join('');
 }
 function renderChips() {
   const chips = COLS.filter(isOn).map((c) => {
@@ -324,7 +347,7 @@ function renderChips() {
   });
   $('#chips').innerHTML = chips.join('') + (chips.length > 1 ? '<button class="chip clear" id="clearAll">Clear all</button>' : '');
 }
-function refreshFilterUi() { renderHead(); renderChips(); }
+function refreshFilterUi() { renderHead(); renderChips(); syncSelectAll(); }
 
 let timer;
 function filtersChanged() { refreshFilterUi(); clearTimeout(timer); timer = setTimeout(reload, 450); }
@@ -346,9 +369,20 @@ function render() {
   } else el.style.display = 'none';
 
   $('#rows').innerHTML = list.map((o) => {
-    const ready = isReady(o), cur = choice[o.orderId] ?? o.suggested ?? 'AUTO', n = notes[o.orderId];
-    const names = new Set([...(couriers[o.orderId] || []), ...(o.suggested ? [o.suggested] : []), ...(cur !== 'AUTO' ? [cur] : [])]);
-    const options = ['AUTO', ...[...names].sort()].map((p) => `<option value="${esc(p)}" ${p === cur ? 'selected' : ''}>${p === 'AUTO' ? 'Auto (Shiprocket)' : esc(p)}</option>`).join('');
+    const ready = isReady(o), plat = platformOf(o), n = notes[o.orderId];
+    let options, nbError = '';
+    if (plat === 'nimbus') {
+      const nb = nimbusOpts[o.orderId], cur = choice[o.orderId] ?? nb?.preselect ?? 'AUTO';
+      if (nb?.error) nbError = nb.error;
+      options = !nb ? '<option value="AUTO">Loading Nimbus options…</option>'
+        : nb.error ? '<option value="AUTO">Nimbus unavailable</option>'
+        : [{ value: 'AUTO', label: 'Cheapest (auto)' }, ...nb.list].map((c) => `<option value="${esc(c.value)}" ${c.value === cur ? 'selected' : ''}>${esc(c.label)}</option>`).join('');
+    } else {
+      const cur = choice[o.orderId] ?? o.suggested ?? 'AUTO';
+      const names = new Set([...(couriers[o.orderId] || []), ...(o.suggested ? [o.suggested] : []), ...(cur !== 'AUTO' ? [cur] : [])]);
+      options = ['AUTO', ...[...names].sort()].map((p) => `<option value="${esc(p)}" ${p === cur ? 'selected' : ''}>${p === 'AUTO' ? 'Auto (Shiprocket)' : esc(p)}</option>`).join('');
+    }
+    const platSel = `<select class="plat" data-id="${o.orderId}" aria-label="Platform for order ${esc(o.channelOrderId)}">${['shiprocket', 'nimbus'].map((x) => `<option value="${x}" ${x === plat ? 'selected' : ''}>${platName(x)}</option>`).join('')}</select>`;
     return `<tr class="${selected.has(o.orderId) ? 'picked' : ''}">
       <td class="stick c0">${ready ? `<input type="checkbox" class="sel" data-id="${o.orderId}" aria-label="Select order ${esc(o.channelOrderId)}" ${selected.has(o.orderId) ? 'checked' : ''}>` : ''}</td>
       <td class="stick c1"><b>${esc(o.channelOrderId)}</b></td>
@@ -362,7 +396,7 @@ function render() {
       <td>${o.items.map((i) => `<div style="margin-bottom:${i.name ? 20 : 4}px">${esc(i.qty)}</div>`).join('')}</td>
       <td>${o.disposition === null ? '<span class="dim">Unavailable</span>' : o.disposition ? `<span class="tag">${esc(o.disposition)}</span>` : '<span class="dim">–</span>'}</td>
       <td>${o.suggested ? `<span class="ok">${esc(o.suggested)}</span>` : '<span class="dim">No preference</span>'}</td>
-      <td>${ready ? `<select class="part" data-id="${o.orderId}" aria-label="Courier for order ${esc(o.channelOrderId)}">${options}</select>` : esc(o.courier || '')}</td>
+      <td>${ready ? `${platSel}<select class="part" data-id="${o.orderId}" aria-label="Courier for order ${esc(o.channelOrderId)}">${options}</select>${nbError ? `<div class="note bad">${esc(nbError)}</div>` : ''}` : esc(o.courier || '')}</td>
       <td><span class="tag">${esc(o.status)}</span>${o.awb ? `<div class="sub">AWB ${esc(o.awb)}</div>` : ''}${n ? `<div class="note ${n.ok ? 'ok' : 'bad'}">${esc(n.text)}</div>` : ''}</td>
       <td class="stick cR">${ready ? `<button class="go one" data-id="${o.orderId}">Ship</button>` : ''}</td>
     </tr>`;
@@ -372,38 +406,73 @@ function render() {
   $('#prev').disabled = pageIdx <= 0; $('#next').disabled = !hasNext;
   $('#bulk').textContent = `Ship selected (${selected.size})`;
   $('#bulk').disabled = !selected.size;
+  syncSelectAll();
 }
 
-// each ready order's serviceable couriers from Shiprocket, 3 at a time
+// select / clear every shippable order on the current page (selection from other pages is kept)
+function syncSelectAll() {
+  const ids = orders.filter(isReady).map((o) => o.orderId);
+  const n = ids.filter((id) => selected.has(id)).length, all = ids.length > 0 && n === ids.length;
+  const box = $('#selAllBox');
+  if (box) { box.checked = all; box.indeterminate = n > 0 && !all; box.disabled = !ids.length; }
+  $('#selAll').textContent = all ? 'Clear selection' : `Select all (${ids.length})`;
+  $('#selAll').disabled = !ids.length;
+}
+function toggleAll(force) {
+  const ids = orders.filter(isReady).map((o) => o.orderId);
+  const on = typeof force === 'boolean' ? force : !(ids.length > 0 && ids.every((id) => selected.has(id)));
+  ids.forEach((id) => (on ? selected.add(id) : selected.delete(id)));
+  render();
+}
+
+// each ready order's serviceable couriers for the platform it is set to (Shiprocket or Nimbus), 3 at a time
 async function loadCouriers() {
-  const todo = orders.filter((o) => isReady(o) && !couriers[o.orderId]).map((o) => o.orderId);
+  const todo = orders.filter(isReady).filter((o) => (platformOf(o) === 'nimbus' ? !nimbusOpts[o.orderId] : !couriers[o.orderId]));
   const worker = async () => {
     while (todo.length) {
-      const id = todo.shift();
-      try { couriers[id] = (await api('/api/couriers/' + id)).couriers; } catch (e) { couriers[id] = []; }
+      const o = todo.shift();
+      if (platformOf(o) === 'nimbus') {
+        try {
+          const q = new URLSearchParams({ platform: 'nimbus' });
+          if (o.suggested) q.set('partner', o.suggested);
+          const d = await api(`/api/couriers/${o.orderId}?${q}`);
+          nimbusOpts[o.orderId] = { list: d.couriers, preselect: d.preselect };
+        } catch (e) { if (e.message === 'auth') return; nimbusOpts[o.orderId] = { error: e.message }; }
+      } else {
+        try { couriers[o.orderId] = (await api('/api/couriers/' + o.orderId)).couriers; } catch (e) { couriers[o.orderId] = []; }
+      }
       if (!loading && (!document.activeElement || document.activeElement.tagName !== 'SELECT')) render();
     }
   };
   await Promise.all([worker(), worker(), worker()]);
 }
 
+const CHUNK = 5; // ship a few orders per request so one request never runs long enough to time out
 async function ship(ids, btns) {
   btns.forEach((b) => (b.disabled = true));
-  const items = ids.map((id) => {
-    const o = known[id];
-    return { orderId: id, shipmentId: o.shipmentId, partner: choice[id] ?? o.suggested ?? 'AUTO',
-      meta: { orderNo: o.channelOrderId, customer: o.customer, pincode: o.pincode, payment: o.payment, amount: o.amount, suggested: o.suggested } };
-  });
+  $('#selAll').disabled = true;
+  const done = [];
   try {
-    const { results } = await api('/api/ship', { method: 'POST', body: { items } });
-    for (const r of results) {
-      notes[r.orderId] = r.ok ? { ok: true, text: `Shipped via ${r.courier}` + (r.awb ? ` · AWB ${r.awb}` : '') } : { ok: false, text: r.error };
-      selected.delete(r.orderId);
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      if (ids.length > CHUNK) $('#bulk').textContent = `Shipping ${Math.min(i + CHUNK, ids.length)} of ${ids.length}…`;
+      const items = ids.slice(i, i + CHUNK).map((id) => {
+        const o = known[id];
+        return { orderId: id, shipmentId: o.shipmentId, platform: platformOf(o), partner: partnerFor(o),
+          meta: { orderNo: o.channelOrderId, customer: o.customer, pincode: o.pincode, payment: o.payment, amount: o.amount, suggested: o.suggested } };
+      });
+      const { results } = await api('/api/ship', { method: 'POST', body: { items } });
+      for (const r of results) {
+        notes[r.orderId] = r.ok ? { ok: true, text: `Shipped via ${platName(r.platform)} · ${r.courier}` + (r.awb ? ` · AWB ${r.awb}` : '') } : { ok: false, text: r.error };
+        selected.delete(r.orderId);
+        done.push(r);
+      }
     }
-    showShipped(results);
-    pageIdx = 0; cursors = [null];
-    await load();
-  } catch (e) { if (e.message !== 'auth') alert(e.message); }
+  } catch (e) {
+    if (e.message !== 'auth') alert(`Stopped after ${done.length} of ${ids.length} orders: ${e.message}\nOrders that already shipped are in Shipping history. The rest are still selected.`);
+  }
+  if (done.length) showShipped(done);
+  pageIdx = 0; cursors = [null];
+  await load();
   btns.forEach((b) => (b.disabled = false));
 }
 
@@ -417,7 +486,7 @@ function showShipped(results) {
   box.innerHTML = `<div class="hd"><b>${done.length} shipped${failed.length ? `, ${failed.length} failed` : ''}</b>` +
     (done.some((r) => r.awb) ? '<button id="copyAwb">Copy AWBs</button>' : '') + '<a href="#/history">Shipping history</a><button id="hideShipped">Dismiss</button></div>' +
     (results.some((r) => r.historySaved === false) ? '<div class="ln bad">Shipped, but not saved to shipping history. Copy the AWBs from here before dismissing.</div>' : '') +
-    done.map((r) => `<div class="ln"><span class="no">${no(r)}</span><span>${esc(r.courier)}</span>${r.awb ? `<span>AWB <span class="awb">${esc(r.awb)}</span></span>` : '<span class="dim">AWB not returned yet, check Shiprocket</span>'}${String(r.pickup).startsWith('pickup failed') ? `<span class="bad">${esc(r.pickup)}</span>` : ''}</div>`).join('') +
+    done.map((r) => `<div class="ln"><span class="no">${no(r)}</span><span class="tag ${r.platform === 'nimbus' ? 'nimbus' : ''}">${platName(r.platform)}</span><span>${esc(r.courier)}</span>${r.awb ? `<span>AWB <span class="awb">${esc(r.awb)}</span></span>` : `<span class="dim">AWB not returned yet, check ${platName(r.platform)}</span>`}${String(r.pickup).startsWith('pickup failed') ? `<span class="bad">${esc(r.pickup)}</span>` : ''}</div>`).join('') +
     failed.map((r) => `<div class="ln"><span class="no">${no(r)}</span><span class="bad">${esc(r.error)}</span></div>`).join('');
   $('#hideShipped').onclick = () => (box.style.display = 'none');
   if ($('#copyAwb')) $('#copyAwb').onclick = () => {
@@ -470,6 +539,8 @@ function clearFilter(key) { delete F[key]; filtersChanged(); }
 function clearAll() { for (const k of Object.keys(F)) delete F[k]; $('#search').value = ''; closePop(); refreshFilterUi(); reload(); }
 
 // ---------- events ----------
+$('#selAll').onclick = () => toggleAll();
+$('#head').addEventListener('change', (e) => { if (e.target.id === 'selAllBox') toggleAll(e.target.checked); });
 $('#head').addEventListener('click', (e) => {
   const b = e.target.closest('.fbtn'); if (!b) return;
   const c = COLS.find((x) => x.key === b.dataset.col);
@@ -483,11 +554,23 @@ $('#rows').addEventListener('change', (e) => {
   const id = Number(e.target.dataset.id);
   if (e.target.classList.contains('sel')) { e.target.checked ? selected.add(id) : selected.delete(id); render(); }
   if (e.target.classList.contains('part')) choice[id] = e.target.value;
+  if (e.target.classList.contains('plat')) { platformChoice[id] = e.target.value; delete choice[id]; render(); loadCouriers(); }
 });
 $('#rows').addEventListener('click', (e) => {
   if (e.target.classList.contains('one')) ship([Number(e.target.dataset.id)], [e.target]);
 });
-$('#bulk').onclick = () => { if (confirm(`Ship ${selected.size} orders?`)) ship([...selected], [$('#bulk')]); };
+$('#bulk').onclick = () => {
+  const ids = [...selected], nb = ids.filter((id) => platformOf(known[id]) === 'nimbus').length;
+  if (confirm(`Ship ${ids.length} orders?` + (nb ? ` (${ids.length - nb} via Shiprocket, ${nb} via Nimbus)` : ''))) ship(ids, [$('#bulk')]);
+};
+$('#platSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  defaultPlatform = b.dataset.p;
+  for (const k of Object.keys(platformChoice)) delete platformChoice[k]; // "Ship via" sets every row
+  for (const k of Object.keys(choice)) delete choice[k];
+  $('#platSeg').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  render(); loadCouriers();
+});
 $('#views').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
   view = b.dataset.v;
@@ -530,6 +613,7 @@ function histQs() {
   if ($('#hFrom').value) qs.set('from', $('#hFrom').value);
   if ($('#hTo').value) qs.set('to', $('#hTo').value);
   if ($('#hSearch').value.trim()) qs.set('q', $('#hSearch').value.trim());
+  if ($('#hPlat').value) qs.set('platform', $('#hPlat').value);
   if ($('#hCourier').value) qs.set('courier', $('#hCourier').value);
   if ($('#hPay').value) qs.set('payment', $('#hPay').value);
   if (hResult !== 'all') qs.set('result', hResult);
@@ -558,6 +642,7 @@ async function loadHistory() {
       const followed = r.suggested && r.courier && r.courier.toLowerCase().includes(r.suggested.toLowerCase());
       return `<tr>
         <td>${esc(fmtWhen(r.shippedAt)).replace(', ', ',<br>')}</td>
+        <td><span class="tag ${r.platform === 'nimbus' ? 'nimbus' : ''}">${platName(r.platform)}</span></td>
         <td><b>${esc(r.orderNo)}</b></td>
         <td>${esc(r.customer)}</td>
         <td>${esc(r.pincode)}</td>
@@ -567,10 +652,11 @@ async function loadHistory() {
         <td>${r.suggested ? `<span class="${followed ? 'ok' : ''}">${esc(r.suggested)}</span><div class="sub">${r.ok ? (followed ? 'Used as suggested' : 'Changed') : ''}</div>` : '<span class="dim">No preference</span>'}</td>
         <td>${r.awb ? `<span class="awb">${esc(r.awb)}</span>` : '<span class="dim">–</span>'}</td>
         <td>${esc(r.pickup || '')}</td>
-        <td><span class="tag ${r.ok ? 'shipped' : 'failed'}">${r.ok ? 'Shipped' : 'Failed'}</span>${r.error ? `<div class="note bad">${esc(r.error)}</div>` : ''}</td>
+        <td><span class="tag ${r.cancelledAt ? 'cancelled' : r.ok ? 'shipped' : 'failed'}">${r.cancelledAt ? 'Cancelled' : r.ok ? 'Shipped' : 'Failed'}</span>${r.error ? `<div class="note bad">${esc(r.error)}</div>` : ''}</td>
+        <td>${r.ok && !r.cancelledAt && r.platform === 'nimbus' ? `<button class="go undo" data-id="${r.id}" data-no="${esc(r.orderNo)}" title="Use this after you cancelled the shipment in the Nimbus panel">Mark cancelled</button>` : ''}</td>
       </tr>`;
     }).join('');
-    const filtered = qs.has('q') || qs.has('courier') || qs.has('payment') || qs.has('result');
+    const filtered = qs.has('q') || qs.has('platform') || qs.has('courier') || qs.has('payment') || qs.has('result');
     empty.style.display = d.rows.length ? 'none' : 'block';
     empty.textContent = filtered ? 'No shipments match these filters.' : 'No shipments in this date range. Orders you ship from this dashboard appear here.';
     $('#hInfo').textContent = `Page ${d.page} of ${d.totalPages} · ${d.total} shipments`;
@@ -584,12 +670,19 @@ async function loadHistory() {
 let hTimer;
 const hReload = () => { hPage = 1; loadHistory(); };
 $('#hSearch').oninput = () => { clearTimeout(hTimer); hTimer = setTimeout(hReload, 400); };
-$('#hFrom').onchange = $('#hTo').onchange = $('#hCourier').onchange = $('#hPay').onchange = hReload;
+$('#hFrom').onchange = $('#hTo').onchange = $('#hPlat').onchange = $('#hCourier').onchange = $('#hPay').onchange = hReload;
 $('#hResult').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
   hResult = b.dataset.r;
   $('#hResult').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
   hReload();
+});
+$('#hRows').addEventListener('click', async (e) => {
+  const b = e.target.closest('.undo'); if (!b) return;
+  if (!confirm(`Mark order ${b.dataset.no} as cancelled?\n\nIt goes back to Ready to ship. Cancel it in the Nimbus panel first: this button does not cancel it there.`)) return;
+  b.disabled = true;
+  try { await api('/api/history/' + b.dataset.id + '/cancel', { method: 'POST', body: {} }); ordersLoaded = false; loadHistory(); }
+  catch (err) { b.disabled = false; if (err.message !== 'auth') alert('Could not update: ' + err.message); }
 });
 $('#hPrev').onclick = () => { hPage--; loadHistory(); };
 $('#hNext').onclick = () => { hPage++; loadHistory(); };

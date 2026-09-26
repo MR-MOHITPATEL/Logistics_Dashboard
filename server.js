@@ -5,6 +5,7 @@ const path = require('path');
 const sr = require('./shiprocket');
 const sheets = require('./sheets');
 const history = require('./history');
+const nimbus = require('./nimbus');
 
 const app = express();
 app.use(express.json());
@@ -36,12 +37,54 @@ app.post('/api/login', (req, res) => {
 app.use('/api', (req, res, next) => (authed(req) ? next() : res.status(401).json({ error: 'auth' })));
 
 // ---------- orders ----------
+// Nimbus builds its shipment from the Shiprocket order data, so keep the recent orders in memory
+const rawOrders = new Map();
+function cacheOrders(list) {
+  for (const o of list) rawOrders.set(o.id, o);
+  while (rawOrders.size > 5000) rawOrders.delete(rawOrders.keys().next().value);
+}
+let pickups = { at: 0, list: [] };
+async function pickupFor(o) {
+  if (Date.now() - pickups.at > 3600 * 1000 || !pickups.list.length) {
+    const d = await sr.api('/settings/company/pickup');
+    pickups = { at: Date.now(), list: (d.data && d.data.shipping_address) || [] };
+  }
+  return pickups.list.find((l) => l.pickup_location === o.pickup_location) || pickups.list.find((l) => l.is_primary_location) || pickups.list[0];
+}
+const STALE = 'Order data is out of date. Press Refresh and try again.';
+
+// Orders shipped through Nimbus in the last 7 days are checked with Nimbus: if it says cancelled, the order is released
+// (goes back to Ready to ship). Results are cached for 5 minutes; Refresh checks again straight away.
+const nbStatus = new Map(); // awb -> { at, cancelled }
+async function dropCancelled(ext, force) {
+  const now = Date.now(), todo = [];
+  for (const [id, x] of ext) {
+    if (x.platform !== 'nimbus' || !x.awb || now - new Date(x.shippedAt).getTime() > 7 * 864e5) continue;
+    const c = nbStatus.get(x.awb);
+    if (!force && c && now - c.at < 5 * 60 * 1000) { if (c.cancelled) ext.delete(id); continue; }
+    todo.push([id, x]);
+  }
+  const worker = async () => {
+    while (todo.length) {
+      const [id, x] = todo.shift();
+      const cancelled = await nimbus.isCancelled(x.awb);
+      nbStatus.set(x.awb, { at: Date.now(), cancelled: cancelled === true });
+      if (cancelled === true) {
+        try { await history.markCancelled({ awb: x.awb }); } catch (e) { console.error('could not mark cancelled:', e.message); }
+        ext.delete(id);
+      }
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  return ext;
+}
+
 const isoDay = (d) => d.toISOString().slice(0, 10);
 const PAGE = 50;
 const MIN_AMOUNT = Number(process.env.MIN_AMOUNT ?? 500);
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
-function shape(o, disp) {
+function shape(o, disp, ext) {
   const shipment = (o.shipments && o.shipments[0]) || {};
   const pin = String(o.customer_pincode || '').trim();
   // units = "Pack of N" from the end of the product name x ordered quantity (falls back to the ordered quantity)
@@ -61,9 +104,11 @@ function shape(o, disp) {
     amount: Number(o.total) || productAmount, // what the customer pays (incl. COD charge), as Shiprocket shows it
     productAmount: productAmount || Number(o.total) || 0, // product value only; used for the minimum-amount rule
     items,
-    status: o.status,
-    awb: shipment.awb_code || shipment.awb || null,
-    courier: shipment.courier || null,
+    status: ext ? 'SHIPPED VIA ' + ext.platform.toUpperCase() : o.status,
+    viaOther: !!ext,
+    platform: ext ? ext.platform : 'shiprocket',
+    awb: ext ? ext.awb : shipment.awb_code || shipment.awb || null,
+    courier: ext ? ext.courier : shipment.courier || null,
     suggested: pinMap.get(pin) || null,
     disposition: disp ? (disp.get(sheets.norm(o.channel_order_id)) ?? '') : null,
   };
@@ -120,7 +165,8 @@ app.get('/api/orders', async (req, res) => {
     catch (e) { sheetWarning = e.message; } // orders still load if the sheet is unreachable
 
     const keep = (o) =>
-      (view !== 'shipped' || String(o.status).toUpperCase() !== 'NEW') && // Shiprocket can't filter "not new"
+      (view !== 'ready' || !o.viaOther) && // shipped through Nimbus: no longer ready
+      (view !== 'shipped' || o.viaOther || String(o.status).toUpperCase() !== 'NEW') && // Shiprocket can't filter "not new"
       matches(o, F, q) &&
       o.productAmount >= MIN_AMOUNT; // orders under the minimum product amount are always hidden
 
@@ -133,8 +179,11 @@ app.get('/api/orders', async (req, res) => {
         sr.listOrders({ ...args, page: p + 1 }).catch(() => null),
       ]);
       scanned++;
+      cacheOrders(r.data);
+      let ext = new Map();
+      try { ext = await dropCancelled(await history.shippedElsewhere(r.data.map((x) => x.id)), fresh); } catch (e) { /* history unavailable: treat as none */ }
       for (; i < r.data.length && out.length < PAGE; i++) {
-        const o = shape(r.data[i], disp);
+        const o = shape(r.data[i], disp, ext.get(r.data[i].id));
         if (keep(o)) out.push(o); else hidden++;
       }
       const more = i < r.data.length ? { p, i } : p < r.totalPages ? { p: p + 1, i: 0 } : null;
@@ -146,9 +195,17 @@ app.get('/api/orders', async (req, res) => {
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
-// couriers Shiprocket says can serve this order (dropdown options)
+// couriers that can serve this order (dropdown options). ?platform=nimbus returns priced Nimbus options instead.
 app.get('/api/couriers/:orderId', async (req, res) => {
   try {
+    if (req.query.platform === 'nimbus') {
+      const o = rawOrders.get(Number(req.params.orderId));
+      if (!o) return res.status(409).json({ error: STALE });
+      const list = await nimbus.serviceable(o, await pickupFor(o));
+      const fmt = (c) => { const [d, m] = String(c.edd).split('-'); return `${c.name} · ₹${c.total_charges} · by ${d}/${m}`; };
+      const pre = req.query.partner ? nimbus.choose(list, String(req.query.partner)) : null;
+      return res.json({ couriers: nimbus.lightest(list).sort(nimbus.byPrice).map((c) => ({ value: 'id:' + c.id, label: fmt(c) })), preselect: pre ? 'id:' + pre.id : null });
+    }
     const list = await sr.serviceableCouriers(req.params.orderId);
     res.json({ couriers: [...new Set(list.map(c => c.courier_name))].sort() });
   } catch (e) { res.status(502).json({ error: e.message }); }
@@ -181,18 +238,37 @@ async function shipOne({ orderId, shipmentId, partner }) {
   return { courier: pick.courier_name, awb: awb || null, pickup };
 }
 
+async function shipNimbus(it) {
+  const already = (await history.shippedElsewhere([Number(it.orderId)])).get(Number(it.orderId));
+  if (already) throw new Error(`Already shipped through ${already.platform}${already.awb ? ', AWB ' + already.awb : ''}`);
+  const o = rawOrders.get(Number(it.orderId));
+  if (!o) throw new Error(STALE);
+  let phone = '';
+  try { phone = await sheets.phoneFor(o.channel_order_id); } catch (e) { throw new Error('Could not read the phone number from the Google Sheet: ' + e.message); }
+  if (!phone) throw new Error(`No phone number for order ${o.channel_order_id} in the Google Sheet yet, and Nimbus needs one`);
+  const pk = await pickupFor(o);
+  if (!pk) throw new Error('No pickup address found in Shiprocket');
+  const list = await nimbus.serviceable(o, pk);
+  if (!list.length) throw new Error('No Nimbus courier serves this pin code');
+  const pick = nimbus.choose(list, it.partner);
+  if (!pick) throw new Error(`${it.partner} is not available through Nimbus for this order. Available: ${[...new Set(nimbus.lightest(list).map((c) => c.name))].join(', ')}`);
+  const r = await nimbus.createShipment(o, pick.id, pk, process.env.NIMBUS_WAREHOUSE, phone);
+  return { courier: pick.name, awb: r.awb, pickup: 'requested' };
+}
+
 app.post('/api/ship', async (req, res) => {
   const items = Array.isArray(req.body.items) ? req.body.items : [];
   const results = [];
-  for (const it of items) { // sequential to respect Shiprocket rate limits
+  for (const it of items) { // sequential to respect the platforms' rate limits
     const m = it.meta || {};
+    const platform = it.platform === 'nimbus' ? 'nimbus' : 'shiprocket';
     const base = {
       orderId: it.orderId, orderNo: m.orderNo, shipmentId: it.shipmentId, customer: m.customer, pincode: m.pincode,
-      payment: m.payment, amount: m.amount, requested: it.partner === 'AUTO' ? null : it.partner, suggested: m.suggested || null,
+      payment: m.payment, amount: m.amount, requested: it.partner === 'AUTO' ? null : it.partner, suggested: m.suggested || null, platform,
     };
     let r;
-    try { r = { orderId: it.orderId, ok: true, ...(await shipOne(it)) }; }
-    catch (e) { r = { orderId: it.orderId, ok: false, error: e.message }; }
+    try { r = { orderId: it.orderId, platform, ok: true, ...(await (platform === 'nimbus' ? shipNimbus(it) : shipOne(it))) }; }
+    catch (e) { r = { orderId: it.orderId, platform, ok: false, error: e.message }; }
     try { await history.add({ ...base, courier: r.courier || null, awb: r.awb || null, pickup: r.pickup || null, ok: r.ok, error: r.error || null }); }
     catch (e) { r.historySaved = false; console.error('history save failed:', e.message); } // shipping already happened; just tell the user
     results.push(r);
@@ -203,7 +279,7 @@ app.post('/api/ship', async (req, res) => {
 // ---------- shipping history ----------
 const IST = '+05:30';
 function historyFilters(q) {
-  const f = { q: String(q.q || '').trim(), result: ['ok', 'failed'].includes(q.result) ? q.result : '', courier: String(q.courier || ''), payment: ['cod', 'prepaid'].includes(q.payment) ? q.payment : '' };
+  const f = { q: String(q.q || '').trim(), result: ['ok', 'failed', 'cancelled'].includes(q.result) ? q.result : '', courier: String(q.courier || ''), payment: ['cod', 'prepaid'].includes(q.payment) ? q.payment : '', platform: ['shiprocket', 'nimbus'].includes(q.platform) ? q.platform : '' };
   if (DAY.test(q.from)) f.from = new Date(`${q.from}T00:00:00.000${IST}`).toISOString();
   if (DAY.test(q.to)) f.to = new Date(`${q.to}T23:59:59.999${IST}`).toISOString();
   return f;
@@ -215,13 +291,20 @@ app.get('/api/history', async (req, res) => {
     res.json({ ...r, page, size, totalPages: Math.max(1, Math.ceil(r.total / size)), storage: history.storage() });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+// manual fallback: the shipment was cancelled in Nimbus, so free the order
+app.post('/api/history/:id/cancel', async (req, res) => {
+  try {
+    const n = await history.markCancelled({ id: Number(req.params.id) });
+    res.json({ ok: n > 0 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 app.get('/api/history.csv', async (req, res) => {
   try {
     const { rows } = await history.list({ ...historyFilters(req.query), limit: null });
     const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const when = (iso) => new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
-    const head = ['Shipped at (IST)', 'Order', 'Customer', 'Pin', 'Payment', 'Amount', 'Courier', 'Suggested partner', 'AWB', 'Pickup', 'Result', 'Error'];
-    const lines = rows.map((r) => [when(r.shippedAt), r.orderNo, r.customer, r.pincode, r.payment, r.amount, r.courier, r.suggested, r.awb, r.pickup, r.ok ? 'Shipped' : 'Failed', r.error].map(cell).join(','));
+    const head = ['Shipped at (IST)', 'Platform', 'Order', 'Customer', 'Pin', 'Payment', 'Amount', 'Courier', 'Suggested partner', 'AWB', 'Pickup', 'Result', 'Error'];
+    const lines = rows.map((r) => [when(r.shippedAt), r.platform, r.orderNo, r.customer, r.pincode, r.payment, r.amount, r.courier, r.suggested, r.awb, r.pickup, r.cancelledAt ? 'Cancelled' : r.ok ? 'Shipped' : 'Failed', r.error].map(cell).join(','));
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', 'attachment; filename="shipping-history.csv"');
     res.send('\ufeff' + [head.map(cell).join(','), ...lines].join('\r\n'));

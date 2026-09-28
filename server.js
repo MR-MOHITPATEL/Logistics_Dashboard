@@ -6,6 +6,8 @@ const sr = require('./shiprocket');
 const sheets = require('./sheets');
 const history = require('./history');
 const nimbus = require('./nimbus');
+const report = require('./report');
+const reportstore = require('./reportstore');
 
 const app = express();
 app.use(express.json());
@@ -311,7 +313,65 @@ app.get('/api/history.csv', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ---------- daily shipping funnel (Booked / Shipped / In Transit / Delivered / RTO per day) ----------
+// A background job keeps the last REPORT_WINDOW_DAYS pre-computed in reportstore (Postgres on Railway),
+// so most page loads are instant. A request for days outside that window, or a forced refresh, falls back
+// to computing live (slow: scans every Nimbus order plus a Shiprocket sweep) and saves the result for next time.
+const REPORT_WINDOW_DAYS = 10;
+const REPORT_REFRESH_MS = 20 * 60 * 1000;
+let reportRefreshing = false;
+async function refreshReportWindow() {
+  if (reportRefreshing) return; // don't overlap a slow run with the next timer tick
+  reportRefreshing = true;
+  try {
+    const to = isoDay(new Date());
+    const from = isoDay(new Date(Date.now() - (REPORT_WINDOW_DAYS - 1) * 864e5));
+    const r = await report.dailyFunnel(from, to, MIN_AMOUNT);
+    await reportstore.upsert(r.rows);
+    console.log(`Daily report: refreshed ${from}..${to} (${r.rows.length} days)`);
+  } catch (e) { console.error('Daily report background refresh failed:', e.message); }
+  reportRefreshing = false;
+}
+
+function summarize(rows) {
+  const sum = { total: 0, ...Object.fromEntries(report.STAGES.map((s) => [s, 0])) };
+  for (const r of rows) { sum.total += r.total; for (const s of report.STAGES) sum[s] += r[s]; }
+  return report.withDisplayColumns(sum);
+}
+
+app.get('/api/report', async (req, res) => {
+  try {
+    if (!nimbus.configuredV2()) return res.status(409).json({ error: 'Nimbus reporting is not set up: add NIMBUS_API_KEY and NIMBUS_API_SECRET' });
+    const to = DAY.test(req.query.to) ? req.query.to : isoDay(new Date());
+    const from = DAY.test(req.query.from) ? req.query.from : isoDay(new Date(Date.now() - 6 * 864e5));
+    if (from > to) return res.status(400).json({ error: 'From date must be before the To date' });
+    if ((new Date(to) - new Date(from)) / 864e5 > 31) return res.status(400).json({ error: 'Pick a range of 31 days or less' });
+
+    let rows, source;
+    if (!req.query.refresh) {
+      const stored = await reportstore.get(from, to);
+      const days = []; for (let d = from; d <= to; d = new Date(new Date(d).getTime() + 864e5).toISOString().slice(0, 10)) days.push(d);
+      if (days.every((d) => stored.has(d))) { rows = days.map((d) => report.withDisplayColumns(stored.get(d))); source = 'store'; }
+    }
+    if (!rows) {
+      const r = await report.dailyFunnel(from, to, MIN_AMOUNT);
+      rows = r.rows;
+      source = 'live';
+      reportstore.upsert(r.rows.map(({ booked, shipped, ...raw }) => raw)).catch((e) => console.error('report cache save failed:', e.message));
+      if (r.unknownStatuses.length) return res.json({ rows, summary: summarize(rows), unknownStatuses: r.unknownStatuses, from, to, source });
+    }
+    res.json({ rows, summary: summarize(rows), unknownStatuses: [], from, to, source });
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
-history.init()
-  .catch((e) => console.error('History database unavailable, using a local file instead:', e.message))
-  .finally(() => app.listen(process.env.PORT || 3000, () => console.log('Dashboard on :' + (process.env.PORT || 3000) + ' | history stored in ' + history.storage())));
+Promise.all([
+  history.init().catch((e) => console.error('History database unavailable, using a local file instead:', e.message)),
+  reportstore.init().catch((e) => console.error('Report cache database unavailable, using a local file instead:', e.message)),
+]).finally(() => {
+  app.listen(process.env.PORT || 3000, () => console.log('Dashboard on :' + (process.env.PORT || 3000) + ' | history stored in ' + history.storage() + ' | report cache in ' + reportstore.storage()));
+  if (nimbus.configuredV2()) {
+    refreshReportWindow(); // fills the cache on startup instead of waiting REPORT_REFRESH_MS for the first pass
+    setInterval(refreshReportWindow, REPORT_REFRESH_MS);
+  }
+});

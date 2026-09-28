@@ -150,6 +150,7 @@
     <nav class="nav" aria-label="Pages">
       <a href="#/orders" id="navOrders" aria-current="page">Orders</a>
       <a href="#/history" id="navHistory">Shipping history</a>
+      <a href="#/report" id="navReport">Daily report</a>
     </nav>
     <div class="grow"></div>
     <div id="orderActions" style="display:flex;gap:12px;align-items:center">
@@ -221,6 +222,28 @@
       <div class="empty" id="hEmpty" style="display:none"></div>
     </div>
     <div id="hPager" style="display:flex;gap:14px;align-items:center;justify-content:center;padding:0 20px 28px;color:var(--mute)"><button class="btn" id="hPrev">Previous</button><span id="hInfo"></span><button class="btn" id="hNext">Next</button></div>
+  </div>
+
+  <div id="report" style="display:none">
+    <div id="rWarn"></div>
+    <div class="bar">
+      <label class="fld">From <input class="in" type="date" id="rFrom"></label>
+      <label class="fld">To <input class="in" type="date" id="rTo"></label>
+      <button class="btn" id="rRefresh">Refresh</button>
+      <span class="dim" id="rNote" style="font-size:13px"></span>
+    </div>
+    <div id="rLoad" style="margin-top:12px"></div>
+    <div class="wrap" style="margin-top:12px">
+      <table>
+        <thead><tr>
+          <th><div class="th">Date</div></th><th><div class="th">Total orders</div></th><th><div class="th">Booked</div></th><th><div class="th">Shipped</div></th>
+          <th><div class="th">In transit</div></th><th><div class="th">Delivered</div></th><th><div class="th">RTO</div></th><th><div class="th">Not booked</div></th>
+        </tr></thead>
+        <tbody id="rRows"></tbody>
+        <tfoot id="rSummary"></tfoot>
+      </table>
+      <div class="empty" id="rEmpty" style="display:none"></div>
+    </div>
   </div>
 </div>
 
@@ -583,7 +606,11 @@ $('#prev').onclick = () => { pageIdx--; load(); };
 $('#next').onclick = () => { pageIdx++; load(); };
 $('#refresh').onclick = () => load(true);
 $('#loginBtn').onclick = async () => {
-  try { await api('/api/login', { method: 'POST', body: { password: $('#pw').value } }); onHistory() ? loadHistory() : load(); }
+  try {
+    await api('/api/login', { method: 'POST', body: { password: $('#pw').value } });
+    ordersLoaded = false; // the pre-login attempt failed with 401; force a real load now that we're authenticated
+    showPage();
+  }
   catch (e) { $('#loginErr').textContent = e.message === 'Wrong password' ? 'Wrong password. Check DASHBOARD_PASSWORD in .env.' : e.message; }
 };
 $('#pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#loginBtn').click(); });
@@ -591,22 +618,66 @@ $('#pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#loginBt
 // ---------- pages: Orders and Shipping history ----------
 const istDay = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d);
 const onHistory = () => location.hash === '#/history';
+const onReport = () => location.hash === '#/report';
 let ordersLoaded = false, hPage = 1, hResult = 'all', hSeq = 0;
 
 function showPage() {
-  const h = onHistory();
-  $('#ordersPage').style.display = h ? 'none' : '';
+  const h = onHistory(), r = onReport();
+  $('#ordersPage').style.display = h || r ? 'none' : '';
   $('#hist').style.display = h ? '' : 'none';
-  $('#orderActions').style.display = h ? 'none' : 'flex';
-  $('#navOrders').setAttribute('aria-current', h ? 'false' : 'page');
+  $('#report').style.display = r ? '' : 'none';
+  $('#orderActions').style.display = h || r ? 'none' : 'flex';
+  $('#navOrders').setAttribute('aria-current', h || r ? 'false' : 'page');
   $('#navHistory').setAttribute('aria-current', h ? 'page' : 'false');
+  $('#navReport').setAttribute('aria-current', r ? 'page' : 'false');
   closePop();
   if (h) {
     if (!$('#hFrom').value) { $('#hTo').value = istDay(new Date()); $('#hFrom').value = istDay(new Date(Date.now() - 30 * 864e5)); }
     hPage = 1; loadHistory();
+  } else if (r) {
+    if (!$('#rFrom').value) { $('#rTo').value = istDay(new Date()); $('#rFrom').value = istDay(new Date(Date.now() - 6 * 864e5)); }
+    loadReport();
   } else if (!ordersLoaded) load();
 }
 window.addEventListener('hashchange', showPage);
+
+// ---------- Daily report: Booked / In Transit / Delivered / RTO per day ----------
+let rSeq = 0;
+async function loadReport(fresh = false) {
+  const seq = ++rSeq;
+  $('#login').style.display = 'none'; $('#app').style.display = 'block';
+  $('#rRows').innerHTML = ''; $('#rSummary').innerHTML = ''; $('#rNote').textContent = '';
+  $('#rLoad').classList.add('on');
+  const empty = $('#rEmpty'); empty.style.display = 'block'; empty.textContent = 'Loading — this reads every order from Nimbus and Shiprocket, so it can take a minute…';
+  const pct = (n, total) => (total ? Math.round((n / total) * 100) + '%' : '–');
+  const cells = (r) => `
+      <td><b>${r.total}</b></td>
+      <td>${r.booked} <span class="dim">(${pct(r.booked, r.total)})</span></td>
+      <td>${r.shipped} <span class="dim">(${pct(r.shipped, r.total)})</span></td>
+      <td>${r.inTransit} <span class="dim">(${pct(r.inTransit, r.total)})</span></td>
+      <td>${r.delivered} <span class="dim">(${pct(r.delivered, r.total)})</span></td>
+      <td>${r.rto} <span class="dim">(${pct(r.rto, r.total)})</span></td>
+      <td>${r.notBooked} <span class="dim">(${pct(r.notBooked, r.total)})</span></td>`;
+  try {
+    const qs = new URLSearchParams({ from: $('#rFrom').value, to: $('#rTo').value });
+    if (fresh) qs.set('refresh', '1');
+    const d = await api('/api/report?' + qs);
+    if (seq !== rSeq) return;
+    $('#rWarn').textContent = '';
+    $('#rNote').textContent = d.source === 'store' ? 'From the pre-computed cache — updates automatically every 20 minutes.' : fresh ? 'Just loaded fresh from Nimbus and Shiprocket.' : 'This range isn\'t cached yet, so it was computed live just now.';
+    if (d.unknownStatuses?.length) $('#rWarn').innerHTML = `<div class="note bad" style="padding:8px 0">Saw a Nimbus tracking status this page doesn't recognise yet, counted as In transit: ${d.unknownStatuses.map(esc).join(', ')}. Tell the developer so the mapping can be added.</div>`;
+    empty.style.display = d.rows.length ? 'none' : 'block';
+    empty.textContent = 'No data for this range.';
+    $('#rRows').innerHTML = d.rows.map((r) => `<tr><td><b>${esc(r.day)}</b></td>${cells(r)}</tr>`).join('');
+    if (d.rows.length > 1) $('#rSummary').innerHTML = `<tr style="font-weight:600;border-top:2px solid var(--line-strong)"><td>All ${d.rows.length} days</td>${cells(d.summary)}</tr>`;
+  } catch (e) {
+    if (seq !== rSeq) return;
+    if (e.message !== 'auth') { empty.style.display = 'block'; empty.textContent = 'Could not load the report: ' + e.message; }
+  }
+  if (seq === rSeq) $('#rLoad').classList.remove('on');
+}
+$('#rFrom').onchange = $('#rTo').onchange = () => loadReport();
+$('#rRefresh').onclick = () => loadReport(true);
 
 function histQs() {
   const qs = new URLSearchParams();

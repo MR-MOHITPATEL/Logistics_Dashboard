@@ -4,3 +4,5 @@ project-*.json
 *-key.json
 ~$*
 data/history.json
+data/report.json
+api-1.json

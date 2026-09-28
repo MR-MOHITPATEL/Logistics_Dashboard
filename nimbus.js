@@ -25,16 +25,34 @@ async function login() {
   tokenAt = Date.now();
 }
 
-async function call(path, { method = 'GET', body } = {}, retry = true) {
+async function callV1(path, { method = 'GET', body } = {}, retry = true) {
   if (!token || Date.now() - tokenAt > 6 * 3600 * 1000) await login();
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if ((res.status === 401 || res.status === 403) && retry) { token = null; return call(path, { method, body }, false); }
+  if ((res.status === 401 || res.status === 403) && retry) { token = null; return callV1(path, { method, body }, false); }
   const d = await res.json().catch(() => ({}));
   if (!res.ok || d.status === false) throw new Error(errorText(d) || `Nimbus ${res.status}`);
+  return d;
+}
+
+// ---- v2 "Partner API" (https://api-v2.nimbuspost.com), used for reporting: order lists and tracking.
+// Separate credential from the v1 login above: an API key + secret pair (Settings > API Keys), sent as
+// x-api-key / x-api-secret headers. The key must have this server's outbound IP on its allowlist.
+const BASE_V2 = 'https://api-v2.nimbuspost.com';
+const configuredV2 = () => !!(process.env.NIMBUS_API_KEY && process.env.NIMBUS_API_SECRET);
+
+async function call(path, { method = 'GET', body } = {}) {
+  if (!configuredV2()) throw new Error('Nimbus reporting is not set up: add NIMBUS_API_KEY and NIMBUS_API_SECRET');
+  const res = await fetch(`${BASE_V2}${path}`, {
+    method,
+    headers: { 'x-api-key': process.env.NIMBUS_API_KEY, 'x-api-secret': process.env.NIMBUS_API_SECRET, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok || d.success === false) throw new Error(d?.error?.detail || errorText(d) || `Nimbus ${res.status}`);
   return d;
 }
 
@@ -53,7 +71,7 @@ function packageOf(o) {
 // couriers that can deliver this order, each with price and delivery date
 async function serviceable(o, pickup) {
   const pkg = packageOf(o);
-  const d = await call('/courier/serviceability', {
+  const d = await callV1('/courier/serviceability', {
     method: 'POST',
     body: {
       origin: String(pickup.pin_code), destination: String(o.customer_pincode),
@@ -119,7 +137,7 @@ function shipmentBody(o, courierId, pickup, warehouseName, customerPhone) {
 
 async function createShipment(o, courierId, pickup, warehouseName, customerPhone) {
   const body = shipmentBody(o, courierId, pickup, warehouseName, customerPhone);
-  const d = await call('/shipments', { method: 'POST', body });
+  const d = await callV1('/shipments', { method: 'POST', body });
   const r = d.data || {};
   return { awb: r.awb_number || r.awb || null, shipmentId: r.shipment_id || null, label: r.label || null };
 }
@@ -127,11 +145,11 @@ async function createShipment(o, courierId, pickup, warehouseName, customerPhone
 // true when Nimbus says the shipment is cancelled, false when it says anything else, null when we could not find out
 async function isCancelled(awb) {
   try {
-    const d = await call('/shipments/track/' + encodeURIComponent(awb));
+    const d = await callV1('/shipments/track/' + encodeURIComponent(awb));
     const x = d.data || {};
     const text = [x.status, x.current_status, x.shipment_status, x.tracking_status].filter((v) => typeof v === 'string').join(' ');
     return /cancel/i.test(text);
   } catch (e) { return null; }
 }
 
-module.exports = { isCancelled, configured, serviceable, lightest, choose, createShipment, shipmentBody, byPrice };
+module.exports = { isCancelled, configured, serviceable, lightest, choose, createShipment, shipmentBody, byPrice, call, configuredV2 };

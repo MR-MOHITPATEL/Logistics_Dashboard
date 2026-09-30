@@ -3,7 +3,10 @@ const fs = require('fs');
 
 let token = null, tokenExp = 0;
 let cache = { at: 0, map: new Map(), phones: new Map() };
-const TTL = 20 * 1000; // paging/courier lookups reuse the sheet for 20s; Refresh bypasses this
+// This sheet is large enough that Google is currently slow to serve it (measured 2-5 minutes on a bad day),
+// so a short TTL made ordinary page loads pay that cost constantly. 5 minutes trades some staleness for that;
+// Refresh on the Orders page always bypasses this and reads live.
+const TTL = 5 * 60 * 1000;
 
 function loadKey() {
   if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) return JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
@@ -32,28 +35,59 @@ async function accessToken() {
 }
 
 const norm = (v) => String(v ?? '').replace('#', '').trim();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const colLetter = (i) => (i < 26 ? '' : colLetter(Math.floor(i / 26) - 1)) + String.fromCharCode(65 + (i % 26));
 
-// Map of order number -> Disposition text, read fresh from the sheet unless cached < 20s ago
+// A single GET, retried a few times with backoff — this sheet's size occasionally trips a transient
+// Google-side "service unavailable" (or, for the old full-width fetch, just takes minutes).
+async function getValues(range, attempt = 1) {
+  const MAX = 4;
+  let res;
+  try {
+    res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${process.env.SHEET_ID}/values/${encodeURIComponent(range)}`, {
+      headers: { Authorization: 'Bearer ' + (await accessToken()) },
+    });
+  } catch (e) {
+    if (attempt >= MAX) throw new Error('Google Sheets unreachable: ' + e.message);
+    await sleep(500 * 2 ** (attempt - 1));
+    return getValues(range, attempt + 1);
+  }
+  const d = await res.json().catch(() => ({}));
+  if (d.error && /unavailable|backend|timeout/i.test(d.error.message || '') && attempt < MAX) {
+    await sleep(1000 * attempt);
+    return getValues(range, attempt + 1);
+  }
+  if (d.error) throw new Error('Google Sheets: ' + d.error.message);
+  return d.values || [];
+}
+
+// Map of order number -> Disposition text, read fresh from the sheet unless cached < 20s ago.
+// The sheet has 18,000+ rows and 30+ columns; we only need 3, so read the header row first to find which
+// columns those are, then fetch just those columns instead of the whole sheet (was taking minutes at full width).
 async function dispositions(force = false) {
   if (!force && Date.now() - cache.at < TTL) return cache.map;
-  const range = encodeURIComponent(`'${process.env.SHEET_TAB}'!A:Z`);
-  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${process.env.SHEET_ID}/values/${range}`, {
-    headers: { Authorization: 'Bearer ' + (await accessToken()) },
-  });
-  const d = await res.json();
-  if (d.error) throw new Error('Google Sheets: ' + d.error.message);
-  const [head = [], ...rows] = d.values || [];
+  const tab = process.env.SHEET_TAB;
+  const [head = []] = await getValues(`'${tab}'!1:1`);
   const col = (name) => head.findIndex((h) => String(h).trim().toLowerCase() === name);
-  const idCol = col('order_id'), dispCol = col('disposition'), phoneCol = col('phone');
-  if (idCol < 0 || dispCol < 0) throw new Error('Sheet is missing an Order_ID or Disposition column');
-  const map = new Map(), phones = new Map();
-  for (const r of rows) {
-    if (!r[idCol]) continue;
-    map.set(norm(r[idCol]), String(r[dispCol] ?? '').trim()); // later rows win
-    const ph = phoneCol >= 0 ? String(r[phoneCol] ?? '').replace(/\D/g, '').slice(-10) : '';
-    if (ph.length === 10) phones.set(norm(r[idCol]), ph);
+  const idIdx = col('order_id'), dispIdx = col('disposition'), phoneIdx = col('phone');
+  if (idIdx < 0 || dispIdx < 0) throw new Error('Sheet is missing an Order_ID or Disposition column');
+
+  const idCol = colLetter(idIdx), dispCol = colLetter(dispIdx), phoneCol = phoneIdx >= 0 ? colLetter(phoneIdx) : null;
+  const [ids, disps, phones] = await Promise.all([
+    getValues(`'${tab}'!${idCol}2:${idCol}`),
+    getValues(`'${tab}'!${dispCol}2:${dispCol}`),
+    phoneCol ? getValues(`'${tab}'!${phoneCol}2:${phoneCol}`) : Promise.resolve([]),
+  ]);
+
+  const map = new Map(), phoneMap = new Map();
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i]?.[0];
+    if (!id) continue;
+    map.set(norm(id), String(disps[i]?.[0] ?? '').trim()); // later rows win
+    const ph = String(phones[i]?.[0] ?? '').replace(/\D/g, '').slice(-10);
+    if (ph.length === 10) phoneMap.set(norm(id), ph);
   }
-  cache = { at: Date.now(), map, phones };
+  cache = { at: Date.now(), map, phones: phoneMap };
   return map;
 }
 

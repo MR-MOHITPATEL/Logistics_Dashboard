@@ -110,6 +110,21 @@
   #shipped .hd a{color:var(--signal);font-weight:500;text-decoration:none}
   #shipped .hd a:hover{text-decoration:underline}
   #hist table{min-width:1460px}
+  .daylink{border:0;background:none;padding:0;cursor:pointer;color:var(--ink);text-decoration:underline;text-decoration-color:var(--line-strong)}
+  .daylink:hover{text-decoration-color:var(--signal)}
+  #rDetail{display:none;margin:0 20px 16px;background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  #rDetail .hd{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--head)}
+  #rDetail .hd b{margin-right:auto}
+  #rDetailWrap{max-height:60vh;overflow:auto}
+  #rDetail table{min-width:1100px}
+  #rDetail .awb{font-weight:600;user-select:all}
+  #cDetail{display:none;margin:0 20px 16px;background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  #cDetail .hd{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--head)}
+  #cDetail .hd b{white-space:nowrap}
+  #cDetailWrap{max-height:60vh;overflow:auto}
+  #cDetail table{min-width:900px}
+  .match-yes{color:var(--go);font-weight:600}
+  .match-no{color:var(--stop);font-weight:600}
   #hist .awb{font-weight:600;user-select:all}
   #histWarn{margin:12px 20px 0;padding:10px 14px;border:1px solid #F1D08A;background:#FFF6DD;border-radius:8px;display:none}
   .empty{padding:44px 20px;text-align:center;color:var(--mute)}
@@ -151,6 +166,7 @@
       <a href="#/orders" id="navOrders" aria-current="page">Orders</a>
       <a href="#/history" id="navHistory">Shipping history</a>
       <a href="#/report" id="navReport">Daily report</a>
+      <a href="#/compliance" id="navCompliance">Partner compliance</a>
     </nav>
     <div class="grow"></div>
     <div id="orderActions" style="display:flex;gap:12px;align-items:center">
@@ -236,13 +252,91 @@
     <div class="wrap" style="margin-top:12px">
       <table>
         <thead><tr>
-          <th><div class="th">Date</div></th><th><div class="th">Total orders</div></th><th><div class="th">Booked</div></th><th><div class="th">Shipped</div></th>
-          <th><div class="th">In transit</div></th><th><div class="th">Delivered</div></th><th><div class="th">RTO</div></th><th><div class="th">Not booked</div></th>
+          <th><div class="th">Date</div></th><th><div class="th">Total orders</div></th>
+          <th><div class="th" title="% of total orders">Booked</div></th><th><div class="th" title="% of total orders">Shipped</div></th>
+          <th><div class="th" title="% of shipped">In transit</div></th><th><div class="th" title="% of shipped">Delivered</div></th><th><div class="th" title="% of shipped">RTO</div></th>
+          <th><div class="th" title="% of total orders">Not booked</div></th>
         </tr></thead>
         <tbody id="rRows"></tbody>
         <tfoot id="rSummary"></tfoot>
       </table>
       <div class="empty" id="rEmpty" style="display:none"></div>
+    </div>
+
+    <div id="rDetail">
+      <div class="hd">
+        <b id="rDetailTitle"></b>
+        <input class="in" id="rDetailSearch" placeholder="Search order, customer, AWB">
+        <select class="in" id="rDetailStage" aria-label="Stage">
+          <option value="">All stages</option>
+          <option value="notBooked">Not booked</option>
+          <option value="pendingPickup">Booked, pending pickup</option>
+          <option value="inTransit">In transit</option>
+          <option value="delivered">Delivered</option>
+          <option value="rto">RTO</option>
+        </select>
+        <button class="btn" id="rDetailRefresh">Refresh this day</button>
+        <button class="btn" id="rDetailClose">Close</button>
+      </div>
+      <div id="rDetailWrap">
+        <table>
+          <thead><tr>
+            <th><div class="th">Order</div></th><th><div class="th">Customer</div></th><th><div class="th">Platform</div></th>
+            <th><div class="th">AWB</div></th><th><div class="th">Courier</div></th><th><div class="th">Amount</div></th>
+            <th><div class="th">Payment</div></th><th><div class="th">Status</div></th><th><div class="th"></div></th>
+          </tr></thead>
+          <tbody id="rDetailRows"></tbody>
+        </table>
+        <div class="empty" id="rDetailEmpty" style="display:none"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="compliance" style="display:none">
+    <div class="bar">
+      <label class="fld">From <input class="in" type="date" id="cFrom"></label>
+      <label class="fld">To <input class="in" type="date" id="cTo"></label>
+      <button class="btn" id="cRefresh">Refresh</button>
+      <input class="in" id="cSearch" placeholder="Search pin code" style="margin-left:auto">
+      <span class="dim" id="cNote" style="font-size:13px"></span>
+    </div>
+    <div id="cLoad" style="margin-top:12px"></div>
+    <div class="wrap" style="margin-top:12px">
+      <table>
+        <thead><tr>
+          <th><div class="th">Pin code</div></th><th><div class="th">Preferred partner</div></th><th><div class="th">Orders</div></th>
+          <th><div class="th">Shipped</div></th><th><div class="th">Used preferred</div></th><th><div class="th" title="% of shipped orders">Compliance</div></th>
+          <th><div class="th">Pending</div></th>
+        </tr></thead>
+        <tbody id="cRows"></tbody>
+        <tfoot id="cSummary"></tfoot>
+      </table>
+      <div class="empty" id="cEmpty" style="display:none"></div>
+    </div>
+
+    <div id="cDetail">
+      <div class="hd">
+        <b id="cDetailTitle"></b>
+        <span class="dim" id="cDetailPreferred" style="font-size:13px"></span>
+        <input class="in" id="cDetailSearch" placeholder="Search order, customer" style="margin-left:auto">
+        <select class="in" id="cDetailMatch" aria-label="Match">
+          <option value="">All</option>
+          <option value="yes">Matched</option>
+          <option value="no">Mismatched</option>
+          <option value="pending">Pending</option>
+        </select>
+        <button class="btn" id="cDetailClose">Close</button>
+      </div>
+      <div id="cDetailWrap">
+        <table>
+          <thead><tr>
+            <th><div class="th">Date</div></th><th><div class="th">Order</div></th><th><div class="th">Customer</div></th>
+            <th><div class="th">Preferred partner</div></th><th><div class="th">Actual partner</div></th><th><div class="th">Match</div></th><th><div class="th"></div></th>
+          </tr></thead>
+          <tbody id="cDetailRows"></tbody>
+        </table>
+        <div class="empty" id="cDetailEmpty" style="display:none"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -260,8 +354,9 @@ const selected = new Set();
 const choice = {};           // orderId -> partner picked in the dropdown
 let defaultPlatform = 'shiprocket';   // what "Ship via" at the top is set to
 const platformChoice = {};   // orderId -> platform picked on that row (overrides the top setting)
+const autoNimbus = new Set(); // orderIds where Shiprocket can't serve the pin code's preferred partner, so we fell back to Nimbus
 const nimbusOpts = {};       // orderId -> { list: [{value,label}], preselect } or { error }
-const platformOf = (o) => platformChoice[o.orderId] ?? defaultPlatform;
+const platformOf = (o) => platformChoice[o.orderId] ?? (autoNimbus.has(o.orderId) ? 'nimbus' : defaultPlatform);
 const platName = (p) => (p === 'nimbus' ? 'Nimbus' : 'Shiprocket');
 // the partner sent when shipping: the row's pick, else the pin code suggestion (mapped to a Nimbus option when shipping via Nimbus)
 function partnerFor(o) {
@@ -405,7 +500,8 @@ function render() {
       const names = new Set([...(couriers[o.orderId] || []), ...(o.suggested ? [o.suggested] : []), ...(cur !== 'AUTO' ? [cur] : [])]);
       options = ['AUTO', ...[...names].sort()].map((p) => `<option value="${esc(p)}" ${p === cur ? 'selected' : ''}>${p === 'AUTO' ? 'Auto (Shiprocket)' : esc(p)}</option>`).join('');
     }
-    const platSel = `<select class="plat" data-id="${o.orderId}" aria-label="Platform for order ${esc(o.channelOrderId)}">${['shiprocket', 'nimbus'].map((x) => `<option value="${x}" ${x === plat ? 'selected' : ''}>${platName(x)}</option>`).join('')}</select>`;
+    const platSel = `<select class="plat" data-id="${o.orderId}" aria-label="Platform for order ${esc(o.channelOrderId)}">${['shiprocket', 'nimbus'].map((x) => `<option value="${x}" ${x === plat ? 'selected' : ''}>${platName(x)}</option>`).join('')}</select>`
+      + (autoNimbus.has(o.orderId) ? `<div class="sub">Auto: ${esc(o.suggested)} isn't on Shiprocket here</div>` : '');
     return `<tr class="${selected.has(o.orderId) ? 'picked' : ''}">
       <td class="stick c0">${ready ? `<input type="checkbox" class="sel" data-id="${o.orderId}" aria-label="Select order ${esc(o.channelOrderId)}" ${selected.has(o.orderId) ? 'checked' : ''}>` : ''}</td>
       <td class="stick c1"><b>${esc(o.channelOrderId)}</b></td>
@@ -449,20 +545,33 @@ function toggleAll(force) {
 }
 
 // each ready order's serviceable couriers for the platform it is set to (Shiprocket or Nimbus), 3 at a time
+async function fetchNimbusOptions(o) {
+  try {
+    const q = new URLSearchParams({ platform: 'nimbus' });
+    if (o.suggested) q.set('partner', o.suggested);
+    const d = await api(`/api/couriers/${o.orderId}?${q}`);
+    nimbusOpts[o.orderId] = { list: d.couriers, preselect: d.preselect };
+  } catch (e) { if (e.message === 'auth') throw e; nimbusOpts[o.orderId] = { error: e.message }; }
+}
+// Shiprocket stays the default; if it can't serve the pin code's preferred partner for an untouched row,
+// that row falls back to Nimbus automatically (reusing the Shiprocket lookup already made, no extra call).
 async function loadCouriers() {
-  const todo = orders.filter(isReady).filter((o) => (platformOf(o) === 'nimbus' ? !nimbusOpts[o.orderId] : !couriers[o.orderId]));
+  const todoSR = orders.filter(isReady).filter((o) => platformOf(o) !== 'nimbus' && !couriers[o.orderId]);
+  const todoNB = orders.filter(isReady).filter((o) => platformOf(o) === 'nimbus' && !nimbusOpts[o.orderId]);
   const worker = async () => {
-    while (todo.length) {
-      const o = todo.shift();
-      if (platformOf(o) === 'nimbus') {
+    while (todoSR.length || todoNB.length) {
+      if (todoSR.length) {
+        const o = todoSR.shift();
         try {
-          const q = new URLSearchParams({ platform: 'nimbus' });
-          if (o.suggested) q.set('partner', o.suggested);
-          const d = await api(`/api/couriers/${o.orderId}?${q}`);
-          nimbusOpts[o.orderId] = { list: d.couriers, preselect: d.preselect };
-        } catch (e) { if (e.message === 'auth') return; nimbusOpts[o.orderId] = { error: e.message }; }
+          const list = (await api('/api/couriers/' + o.orderId)).couriers;
+          couriers[o.orderId] = list;
+          const canFallBack = defaultPlatform === 'shiprocket' && platformChoice[o.orderId] === undefined && o.suggested
+            && !list.some((c) => c.toLowerCase() === o.suggested.toLowerCase());
+          if (canFallBack) { autoNimbus.add(o.orderId); todoNB.push(o); }
+        } catch (e) { couriers[o.orderId] = []; }
       } else {
-        try { couriers[o.orderId] = (await api('/api/couriers/' + o.orderId)).couriers; } catch (e) { couriers[o.orderId] = []; }
+        const o = todoNB.shift();
+        try { await fetchNimbusOptions(o); } catch (e) { return; } // auth expired: stop, the page will show the login screen
       }
       if (!loading && (!document.activeElement || document.activeElement.tagName !== 'SELECT')) render();
     }
@@ -577,7 +686,7 @@ $('#rows').addEventListener('change', (e) => {
   const id = Number(e.target.dataset.id);
   if (e.target.classList.contains('sel')) { e.target.checked ? selected.add(id) : selected.delete(id); render(); }
   if (e.target.classList.contains('part')) choice[id] = e.target.value;
-  if (e.target.classList.contains('plat')) { platformChoice[id] = e.target.value; delete choice[id]; render(); loadCouriers(); }
+  if (e.target.classList.contains('plat')) { platformChoice[id] = e.target.value; autoNimbus.delete(id); delete choice[id]; render(); loadCouriers(); }
 });
 $('#rows').addEventListener('click', (e) => {
   if (e.target.classList.contains('one')) ship([Number(e.target.dataset.id)], [e.target]);
@@ -591,6 +700,7 @@ $('#platSeg').addEventListener('click', (e) => {
   defaultPlatform = b.dataset.p;
   for (const k of Object.keys(platformChoice)) delete platformChoice[k]; // "Ship via" sets every row
   for (const k of Object.keys(choice)) delete choice[k];
+  autoNimbus.clear(); // re-evaluate the Shiprocket-serviceability fallback fresh for the new default
   $('#platSeg').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
   render(); loadCouriers();
 });
@@ -619,17 +729,21 @@ $('#pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#loginBt
 const istDay = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d);
 const onHistory = () => location.hash === '#/history';
 const onReport = () => location.hash === '#/report';
+const onCompliance = () => location.hash === '#/compliance';
 let ordersLoaded = false, hPage = 1, hResult = 'all', hSeq = 0;
 
 function showPage() {
-  const h = onHistory(), r = onReport();
-  $('#ordersPage').style.display = h || r ? 'none' : '';
+  const h = onHistory(), r = onReport(), c = onCompliance();
+  const other = h || r || c;
+  $('#ordersPage').style.display = other ? 'none' : '';
   $('#hist').style.display = h ? '' : 'none';
   $('#report').style.display = r ? '' : 'none';
-  $('#orderActions').style.display = h || r ? 'none' : 'flex';
-  $('#navOrders').setAttribute('aria-current', h || r ? 'false' : 'page');
+  $('#compliance').style.display = c ? '' : 'none';
+  $('#orderActions').style.display = other ? 'none' : 'flex';
+  $('#navOrders').setAttribute('aria-current', other ? 'false' : 'page');
   $('#navHistory').setAttribute('aria-current', h ? 'page' : 'false');
   $('#navReport').setAttribute('aria-current', r ? 'page' : 'false');
+  $('#navCompliance').setAttribute('aria-current', c ? 'page' : 'false');
   closePop();
   if (h) {
     if (!$('#hFrom').value) { $('#hTo').value = istDay(new Date()); $('#hFrom').value = istDay(new Date(Date.now() - 30 * 864e5)); }
@@ -637,6 +751,9 @@ function showPage() {
   } else if (r) {
     if (!$('#rFrom').value) { $('#rTo').value = istDay(new Date()); $('#rFrom').value = istDay(new Date(Date.now() - 6 * 864e5)); }
     loadReport();
+  } else if (c) {
+    if (!$('#cFrom').value) { $('#cTo').value = istDay(new Date()); $('#cFrom').value = istDay(new Date(Date.now() - 6 * 864e5)); }
+    loadCompliance();
   } else if (!ordersLoaded) load();
 }
 window.addEventListener('hashchange', showPage);
@@ -654,9 +771,9 @@ async function loadReport(fresh = false) {
       <td><b>${r.total}</b></td>
       <td>${r.booked} <span class="dim">(${pct(r.booked, r.total)})</span></td>
       <td>${r.shipped} <span class="dim">(${pct(r.shipped, r.total)})</span></td>
-      <td>${r.inTransit} <span class="dim">(${pct(r.inTransit, r.total)})</span></td>
-      <td>${r.delivered} <span class="dim">(${pct(r.delivered, r.total)})</span></td>
-      <td>${r.rto} <span class="dim">(${pct(r.rto, r.total)})</span></td>
+      <td>${r.inTransit} <span class="dim">(${pct(r.inTransit, r.shipped)})</span></td>
+      <td>${r.delivered} <span class="dim">(${pct(r.delivered, r.shipped)})</span></td>
+      <td>${r.rto} <span class="dim">(${pct(r.rto, r.shipped)})</span></td>
       <td>${r.notBooked} <span class="dim">(${pct(r.notBooked, r.total)})</span></td>`;
   try {
     const qs = new URLSearchParams({ from: $('#rFrom').value, to: $('#rTo').value });
@@ -668,7 +785,7 @@ async function loadReport(fresh = false) {
     if (d.unknownStatuses?.length) $('#rWarn').innerHTML = `<div class="note bad" style="padding:8px 0">Saw a Nimbus tracking status this page doesn't recognise yet, counted as In transit: ${d.unknownStatuses.map(esc).join(', ')}. Tell the developer so the mapping can be added.</div>`;
     empty.style.display = d.rows.length ? 'none' : 'block';
     empty.textContent = 'No data for this range.';
-    $('#rRows').innerHTML = d.rows.map((r) => `<tr><td><b>${esc(r.day)}</b></td>${cells(r)}</tr>`).join('');
+    $('#rRows').innerHTML = d.rows.map((r) => `<tr><td><button class="daylink" data-day="${esc(r.day)}"><b>${esc(r.day)}</b></button></td>${cells(r)}</tr>`).join('');
     if (d.rows.length > 1) $('#rSummary').innerHTML = `<tr style="font-weight:600;border-top:2px solid var(--line-strong)"><td>All ${d.rows.length} days</td>${cells(d.summary)}</tr>`;
   } catch (e) {
     if (seq !== rSeq) return;
@@ -676,8 +793,169 @@ async function loadReport(fresh = false) {
   }
   if (seq === rSeq) $('#rLoad').classList.remove('on');
 }
-$('#rFrom').onchange = $('#rTo').onchange = () => loadReport();
-$('#rRefresh').onclick = () => loadReport(true);
+$('#rFrom').onchange = $('#rTo').onchange = () => { closeDayDetail(); loadReport(); };
+
+// ---------- per-day order list, for manually checking against Nimbus / Shiprocket ----------
+let dayOrders = [], dayOpen = null;
+function closeDayDetail() { dayOpen = null; $('#rDetail').style.display = 'none'; }
+async function openDayDetail(day, fresh = false) {
+  dayOpen = day;
+  $('#rDetail').style.display = 'block';
+  $('#rDetailTitle').textContent = day;
+  $('#rDetailRows').innerHTML = '';
+  const empty = $('#rDetailEmpty'); empty.style.display = 'block';
+  empty.textContent = 'Loading every order for this day…';
+  try {
+    const qs = new URLSearchParams({ day });
+    if (fresh) qs.set('refresh', '1');
+    const d = await api('/api/report/day?' + qs);
+    if (dayOpen !== day) return; // closed or switched to another day while this was loading
+    dayOrders = d.orders;
+    renderDayDetail();
+  } catch (e) {
+    if (dayOpen !== day) return;
+    if (e.message !== 'auth') { empty.style.display = 'block'; empty.textContent = 'Could not load orders: ' + e.message; }
+  }
+}
+const STAGE_LABEL = { notBooked: 'Not booked', pendingPickup: 'Booked', inTransit: 'In transit', delivered: 'Delivered', rto: 'RTO' };
+const DASH_URL = { nimbus: 'https://app.nimbuspost.com/orders', shiprocket: 'https://app.shiprocket.in' };
+function renderDayDetail() {
+  const q = $('#rDetailSearch').value.trim().toLowerCase();
+  const stage = $('#rDetailStage').value;
+  const list = dayOrders.filter((o) =>
+    (!stage || o.stage === stage) &&
+    (!q || [o.orderNo, o.customer, o.awb].some((v) => v && v.toLowerCase().includes(q))));
+  const empty = $('#rDetailEmpty');
+  empty.style.display = list.length ? 'none' : 'block';
+  empty.textContent = dayOrders.length ? 'No orders match this search.' : 'No orders on this day.';
+  $('#rDetailRows').innerHTML = list.map((o) => `<tr>
+      <td><b>${esc(o.orderNo)}</b></td>
+      <td>${esc(o.customer) || '<span class="dim">–</span>'}</td>
+      <td>${o.platform ? `<span class="tag ${o.platform === 'nimbus' ? 'nimbus' : ''}">${o.platform === 'nimbus' ? 'Nimbus' : 'Shiprocket'}</span>` : '<span class="dim">–</span>'}</td>
+      <td>${o.awb ? `<span class="awb">${esc(o.awb)}</span>` : '<span class="dim">–</span>'}</td>
+      <td>${esc(o.courier) || '<span class="dim">–</span>'}</td>
+      <td style="white-space:nowrap">₹${esc(o.amount)}</td>
+      <td>${o.payment ? esc(o.payment.toUpperCase()) : '<span class="dim">–</span>'}</td>
+      <td><span class="tag">${STAGE_LABEL[o.stage] || esc(o.stage)}</span>${o.statusText ? `<div class="sub">${esc(o.statusText)}</div>` : ''}</td>
+      <td style="white-space:nowrap">${o.awb ? `<button class="btn copyAwb" data-awb="${esc(o.awb)}" style="padding:4px 8px">Copy AWB</button>` : ''}${o.platform ? ` <a href="${DASH_URL[o.platform]}" target="_blank" rel="noopener">Open ${o.platform === 'nimbus' ? 'Nimbus' : 'Shiprocket'}</a>` : ''}</td>
+    </tr>`).join('');
+}
+$('#rRows').addEventListener('click', (e) => {
+  const b = e.target.closest('.daylink'); if (b) openDayDetail(b.dataset.day);
+});
+$('#rDetailSearch').oninput = renderDayDetail;
+$('#rDetailStage').onchange = renderDayDetail;
+$('#rDetailClose').onclick = closeDayDetail;
+$('#rDetailRefresh').onclick = () => openDayDetail(dayOpen, true);
+$('#rDetailRows').addEventListener('click', (e) => {
+  const b = e.target.closest('.copyAwb'); if (!b) return;
+  navigator.clipboard?.writeText(b.dataset.awb).then(() => (b.textContent = 'Copied'));
+});
+$('#rRefresh').onclick = () => { closeDayDetail(); loadReport(true); };
+
+// ---------- Partner compliance: did we ship each pin code with its preferred partner ----------
+let cSeq = 0, cRowsData = [];
+async function loadCompliance(fresh = false) {
+  const seq = ++cSeq;
+  closePincodeDetail();
+  $('#login').style.display = 'none'; $('#app').style.display = 'block';
+  $('#cRows').innerHTML = ''; $('#cSummary').innerHTML = ''; $('#cNote').textContent = '';
+  $('#cLoad').classList.add('on');
+  const empty = $('#cEmpty'); empty.style.display = 'block'; empty.textContent = 'Loading — this reads every order from Nimbus and Shiprocket, so it can take a minute…';
+  try {
+    const qs = new URLSearchParams({ from: $('#cFrom').value, to: $('#cTo').value });
+    if (fresh) qs.set('refresh', '1');
+    const d = await api('/api/compliance?' + qs);
+    if (seq !== cSeq) return;
+    $('#cNote').textContent = d.source === 'store' ? 'From the pre-computed cache — updates automatically every 20 minutes.' : fresh ? 'Just loaded fresh from Nimbus and Shiprocket.' : "This range isn't cached yet, so it was computed live just now.";
+    cRowsData = d.pincodes;
+    renderCompliance();
+    if (d.pincodes.length) $('#cSummary').innerHTML = summaryRow(d.summary, `All ${d.pincodes.length} pin codes`);
+  } catch (e) {
+    if (seq !== cSeq) return;
+    if (e.message !== 'auth') { empty.style.display = 'block'; empty.textContent = 'Could not load compliance: ' + e.message; }
+  }
+  if (seq === cSeq) $('#cLoad').classList.remove('on');
+}
+function pctColor(pct) { return pct == null ? '' : pct >= 90 ? 'style="color:var(--go)"' : pct < 60 ? 'style="color:var(--stop)"' : ''; }
+function summaryRow(s, label) {
+  return `<tr style="font-weight:600;border-top:2px solid var(--line-strong)">
+      <td colspan="2">${esc(label)}</td>
+      <td>${s.total}</td><td>${s.shipped}</td><td>${s.matched}</td>
+      <td ${pctColor(s.pct)}>${s.pct == null ? '–' : s.pct + '%'}</td><td>${s.pending}</td>
+    </tr>`;
+}
+function renderCompliance() {
+  const q = $('#cSearch').value.trim().toLowerCase();
+  const list = cRowsData.filter((r) => !q || r.pincode.includes(q));
+  const empty = $('#cEmpty');
+  empty.style.display = list.length ? 'none' : 'block';
+  empty.textContent = cRowsData.length ? 'No pin codes match this search.' : 'No orders in this range went to one of the 100 tracked pin codes.';
+  $('#cRows').innerHTML = list.map((r) => `<tr>
+      <td><button class="daylink" data-pincode="${esc(r.pincode)}">${esc(r.pincode)}</button></td>
+      <td>${esc(r.preferred)}</td>
+      <td><b>${r.total}</b></td>
+      <td>${r.shipped}</td>
+      <td>${r.matched}</td>
+      <td ${pctColor(r.pct)}><b>${r.pct == null ? '–' : r.pct + '%'}</b></td>
+      <td>${r.pending}</td>
+    </tr>`).join('');
+}
+$('#cSearch').oninput = renderCompliance;
+$('#cFrom').onchange = $('#cTo').onchange = () => loadCompliance();
+$('#cRefresh').onclick = () => loadCompliance(true);
+
+let pincodeOrders = [], pincodeOpen = null;
+function closePincodeDetail() { pincodeOpen = null; $('#cDetail').style.display = 'none'; }
+async function openPincodeDetail(pincode) {
+  pincodeOpen = pincode;
+  $('#cDetail').style.display = 'block';
+  $('#cDetailTitle').textContent = pincode;
+  $('#cDetailPreferred').textContent = '';
+  $('#cDetailRows').innerHTML = '';
+  const empty = $('#cDetailEmpty'); empty.style.display = 'block';
+  empty.textContent = 'Loading orders for this pin code…';
+  try {
+    const qs = new URLSearchParams({ pincode, from: $('#cFrom').value, to: $('#cTo').value });
+    const d = await api('/api/compliance/pincode?' + qs);
+    if (pincodeOpen !== pincode) return;
+    $('#cDetailPreferred').textContent = d.preferred ? `Preferred: ${d.preferred}` : '';
+    pincodeOrders = d.orders;
+    renderPincodeDetail();
+  } catch (e) {
+    if (pincodeOpen !== pincode) return;
+    if (e.message !== 'auth') { empty.style.display = 'block'; empty.textContent = 'Could not load orders: ' + e.message; }
+  }
+}
+function renderPincodeDetail() {
+  const q = $('#cDetailSearch').value.trim().toLowerCase();
+  const m = $('#cDetailMatch').value;
+  const list = pincodeOrders.filter((o) =>
+    (!m || (m === 'pending' ? o.match === null : m === 'yes' ? o.match === true : o.match === false)) &&
+    (!q || [o.orderNo, o.customer].some((v) => v && v.toLowerCase().includes(q))));
+  const empty = $('#cDetailEmpty');
+  empty.style.display = list.length ? 'none' : 'block';
+  empty.textContent = pincodeOrders.length ? 'No orders match this search.' : 'No orders for this pin code in this range.';
+  $('#cDetailRows').innerHTML = list.map((o) => `<tr>
+      <td style="white-space:nowrap">${esc(o.date)}</td>
+      <td><b>${esc(o.orderNo)}</b></td>
+      <td>${esc(o.customer) || '<span class="dim">–</span>'}</td>
+      <td>${esc(o.preferred)}</td>
+      <td>${o.actual ? esc(o.actual) : '<span class="dim">Not shipped yet</span>'}</td>
+      <td>${o.match === null ? '<span class="dim">Pending</span>' : o.match ? '<span class="match-yes">✓ Matched</span>' : '<span class="match-no">✗ Mismatched</span>'}</td>
+      <td>${o.awb ? `<button class="btn copyAwb" data-awb="${esc(o.awb)}" style="padding:4px 8px">Copy AWB</button>` : ''}</td>
+    </tr>`).join('');
+}
+$('#cRows').addEventListener('click', (e) => {
+  const b = e.target.closest('.daylink'); if (b) openPincodeDetail(b.dataset.pincode);
+});
+$('#cDetailSearch').oninput = renderPincodeDetail;
+$('#cDetailMatch').onchange = renderPincodeDetail;
+$('#cDetailClose').onclick = closePincodeDetail;
+$('#cDetailRows').addEventListener('click', (e) => {
+  const b = e.target.closest('.copyAwb'); if (!b) return;
+  navigator.clipboard?.writeText(b.dataset.awb).then(() => (b.textContent = 'Copied'));
+});
 
 function histQs() {
   const qs = new URLSearchParams();

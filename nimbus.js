@@ -44,13 +44,28 @@ async function callV1(path, { method = 'GET', body } = {}, retry = true) {
 const BASE_V2 = 'https://api-v2.nimbuspost.com';
 const configuredV2 = () => !!(process.env.NIMBUS_API_KEY && process.env.NIMBUS_API_SECRET);
 
-async function call(path, { method = 'GET', body } = {}) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// The Daily report makes hundreds of these calls in one scan; a single dropped connection anywhere in that
+// sequence shouldn't abort the whole thing, so network-level failures (not Nimbus's own error responses) get
+// a few retries with backoff. A 429 (rate limit, 60/min per key) also retries, waiting longer.
+async function call(path, { method = 'GET', body } = {}, attempt = 1) {
   if (!configuredV2()) throw new Error('Nimbus reporting is not set up: add NIMBUS_API_KEY and NIMBUS_API_SECRET');
-  const res = await fetch(`${BASE_V2}${path}`, {
-    method,
-    headers: { 'x-api-key': process.env.NIMBUS_API_KEY, 'x-api-secret': process.env.NIMBUS_API_SECRET, 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const MAX = 4;
+  let res;
+  try {
+    res = await fetch(`${BASE_V2}${path}`, {
+      method,
+      headers: { 'x-api-key': process.env.NIMBUS_API_KEY, 'x-api-secret': process.env.NIMBUS_API_SECRET, 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    if (attempt >= MAX) throw new Error(`Nimbus unreachable after ${MAX} tries: ${e.message}`);
+    await sleep(500 * 2 ** (attempt - 1));
+    return call(path, { method, body }, attempt + 1);
+  }
+  if (res.status === 429 && attempt < MAX) { await sleep(2000 * attempt); return call(path, { method, body }, attempt + 1); }
+  if (res.status >= 500 && attempt < MAX) { await sleep(500 * 2 ** (attempt - 1)); return call(path, { method, body }, attempt + 1); }
   const d = await res.json().catch(() => ({}));
   if (!res.ok || d.success === false) throw new Error(d?.error?.detail || errorText(d) || `Nimbus ${res.status}`);
   return d;
@@ -92,6 +107,20 @@ function lightest(list) {
 }
 const eddTime = (c) => { const [d, m, y] = String(c.edd || '').split('-').map(Number); return y ? new Date(y, m - 1, d).getTime() : Infinity; };
 const byPrice = (a, b) => a.total_charges - b.total_charges;
+
+// Nimbus's raw courier.name has no Surface/Air suffix, unlike the pin code list ("Delhivery Surface"). For the
+// two couriers the pin code list actually names, derive the same label from delivery speed: among entries
+// sharing that name in the given slab, the fastest is "Air", the rest (or a lone entry) are "Surface". Other
+// couriers are shown as-is, since the pin code list never assigns them a Surface/Air preference.
+const SUFFIXED_COURIERS = ['delhivery', 'xpressbees'];
+function displayName(c, slab) {
+  if (!SUFFIXED_COURIERS.some((n) => c.name.toLowerCase().includes(n))) return c.name;
+  const sameName = slab.filter((x) => x.name === c.name);
+  const eddSet = new Set(sameName.map(eddTime));
+  if (eddSet.size < 2) return `${c.name} Surface`; // one speed tier on offer (or a tie): default to Surface
+  const fastest = Math.min(...eddSet);
+  return `${c.name} ${eddTime(c) === fastest ? 'Air' : 'Surface'}`;
+}
 
 // partner: 'AUTO' | 'id:<nimbus courier id>' | a name from the pin code list, e.g. "Delhivery Surface" or "Xpressbees Air".
 // Nimbus names have no Surface/Air, so: Surface or plain name -> cheapest entry; Air -> fastest entry (cheapest if none is faster).
@@ -152,4 +181,4 @@ async function isCancelled(awb) {
   } catch (e) { return null; }
 }
 
-module.exports = { isCancelled, configured, serviceable, lightest, choose, createShipment, shipmentBody, byPrice, call, configuredV2 };
+module.exports = { isCancelled, configured, serviceable, lightest, choose, displayName, createShipment, shipmentBody, byPrice, call, configuredV2 };

@@ -19,7 +19,7 @@ const STAGES = ['notBooked', 'pendingPickup', 'inTransit', 'delivered', 'rto'];
 function bucketShiprocket(status) {
   const s = String(status || '').toUpperCase();
   if (s === 'NEW') return 'notBooked';
-  if (s === 'CANCELED' || s === 'CANCELLED') return 'cancelled';
+  if (s === 'CANCELED' || s === 'CANCELLED') return 'notBooked'; // cancelled orders aren't shown as their own column
   if (['PICKUP SCHEDULED', 'READY TO SHIP', 'OUT FOR PICKUP'].includes(s)) return 'pendingPickup';
   if (s.includes('RTO')) return 'rto';
   if (s === 'DELIVERED') return 'delivered';
@@ -37,9 +37,12 @@ function bucketNimbusShipStatus(text) {
   return { bucket: 'inTransit', known: false }; // seen for the first time; counted as moving, flagged for review
 }
 
-// Every Nimbus order in [fromDay, toDay] (inclusive, IST calendar days), newest first, tagged with its IST day.
+// Every Nimbus order in [fromDay, toDay] (inclusive, IST calendar days), tagged with its IST day.
+// Nimbus sometimes syncs the same Shopify order into two separate order_id records with the same order
+// number (seen in practice: one "created" with no AWB, one "pickup_scheduled" with an AWB, a few hours
+// apart) — deduped by order number, keeping whichever copy has a shipment actually booked.
 async function nimbusOrdersInRange(fromDay, toDay) {
-  const out = [];
+  const byNo = new Map();
   for (let page = 1; page <= 400; page++) {
     const r = await nb.call('/v2/orders?page=' + page + '&limit=100', {});
     const list = r.data || [];
@@ -48,11 +51,14 @@ async function nimbusOrdersInRange(fromDay, toDay) {
     for (const o of list) {
       const d = istDay(o.order_date);
       if (d < fromDay) { crossedBelow = true; break; }
-      if (d <= toDay) out.push({ ...o, _day: d });
+      if (d > toDay) continue;
+      const key = sheets.norm(o.order_number);
+      const prev = byNo.get(key);
+      if (!prev || (o.shipment?.awb && !prev.shipment?.awb)) byNo.set(key, { ...o, _day: d });
     }
     if (crossedBelow) break;
   }
-  return out;
+  return [...byNo.values()];
 }
 
 async function trackAwbs(awbs) {
@@ -64,14 +70,17 @@ async function trackAwbs(awbs) {
   return map;
 }
 
-// Shiprocket order status by order number, for every order Shiprocket created in [fromDay-1, toDay+1]
-// (padded a day either side: Shiprocket's own created_at can lag Nimbus's order_date slightly).
-async function shiprocketStatusMap(fromDay, toDay) {
+// Shiprocket order (status, AWB, courier, customer) by order number, for every order Shiprocket created in
+// [fromDay-1, toDay+1] (padded a day either side: Shiprocket's own created_at can lag Nimbus's order_date slightly).
+async function shiprocketOrderMap(fromDay, toDay) {
   const from = addDays(fromDay, -1), to = addDays(toDay, 1);
   const map = new Map();
   for (let page = 1; page <= 200; page++) {
     const r = await sr.listOrders({ from, to, page, perPage: 100 });
-    for (const o of r.data) map.set(sheets.norm(o.channel_order_id), o.status);
+    for (const o of r.data) {
+      const sh = (o.shipments && o.shipments[0]) || {};
+      map.set(sheets.norm(o.channel_order_id), { status: o.status, awb: sh.awb_code || sh.awb || null, courier: sh.courier || null, customer: o.customer_name });
+    }
     if (page >= r.totalPages) break;
   }
   return map;
@@ -86,12 +95,12 @@ async function dailyFunnel(fromDay, toDay, minAmount) {
 
   const [awbTrack, srMap] = await Promise.all([
     trackAwbs(nimbusBooked.map((o) => o.shipment.awb)),
-    elsewhere.length ? shiprocketStatusMap(fromDay, toDay) : Promise.resolve(new Map()),
+    elsewhere.length ? shiprocketOrderMap(fromDay, toDay) : Promise.resolve(new Map()),
   ]);
 
-  const days = new Map(); // day -> { day, total, notBooked, pendingPickup, inTransit, delivered, rto }
+  const days = new Map(); // day -> { day, total, notBooked, pendingPickup, inTransit, delivered, rto, orders: [] }
   const dayRow = (d) => {
-    if (!days.has(d)) days.set(d, { day: d, total: 0, ...Object.fromEntries(STAGES.map((s) => [s, 0])) });
+    if (!days.has(d)) days.set(d, { day: d, total: 0, ...Object.fromEntries(STAGES.map((s) => [s, 0])), orders: [] });
     return days.get(d);
   };
   const unknownStatuses = new Set();
@@ -99,15 +108,21 @@ async function dailyFunnel(fromDay, toDay, minAmount) {
   for (const o of qualifying) {
     const row = dayRow(o._day);
     row.total++;
+    const detail = { orderNo: o.order_number, amount: Number(o.total_amount) || 0, payment: o.payment_mode || null, pincode: o.shipping_address?.pincode ? String(o.shipping_address.pincode) : null };
     if (o.shipment?.awb) {
-      const { bucket, known } = bucketNimbusShipStatus(awbTrack.get(o.shipment.awb));
+      const shipStatus = awbTrack.get(o.shipment.awb);
+      const { bucket, known } = bucketNimbusShipStatus(shipStatus);
       row[bucket]++;
-      if (!known) unknownStatuses.add(awbTrack.get(o.shipment.awb));
+      if (!known) unknownStatuses.add(shipStatus);
+      row.orders.push({ ...detail, platform: 'nimbus', customer: o.shipping_address?.name || null, awb: o.shipment.awb, courier: o.shipment.courier_name || null, stage: bucket, statusText: shipStatus || null });
     } else if (o.order_status === 'created') {
       row.notBooked++;
+      row.orders.push({ ...detail, platform: null, customer: o.shipping_address?.name || null, awb: null, courier: null, stage: 'notBooked', statusText: null });
     } else {
-      const status = srMap.get(sheets.norm(o.order_number));
-      row[status ? bucketShiprocket(status) : 'notBooked']++;
+      const sro = srMap.get(sheets.norm(o.order_number));
+      const bucket = sro ? bucketShiprocket(sro.status) : 'notBooked';
+      row[bucket]++;
+      row.orders.push({ ...detail, platform: sro ? 'shiprocket' : null, customer: sro?.customer || o.shipping_address?.name || null, awb: sro?.awb || null, courier: sro?.courier || null, stage: bucket, statusText: sro?.status || null });
     }
   }
 

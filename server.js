@@ -8,6 +8,7 @@ const history = require('./history');
 const nimbus = require('./nimbus');
 const report = require('./report');
 const reportstore = require('./reportstore');
+const compliance = require('./compliance');
 
 const app = express();
 app.use(express.json());
@@ -204,9 +205,10 @@ app.get('/api/couriers/:orderId', async (req, res) => {
       const o = rawOrders.get(Number(req.params.orderId));
       if (!o) return res.status(409).json({ error: STALE });
       const list = await nimbus.serviceable(o, await pickupFor(o));
-      const fmt = (c) => { const [d, m] = String(c.edd).split('-'); return `${c.name} · ₹${c.total_charges} · by ${d}/${m}`; };
+      const slab = nimbus.lightest(list);
+      const fmt = (c) => { const [d, m] = String(c.edd).split('-'); return `${nimbus.displayName(c, slab)} · ₹${c.total_charges} · by ${d}/${m}`; };
       const pre = req.query.partner ? nimbus.choose(list, String(req.query.partner)) : null;
-      return res.json({ couriers: nimbus.lightest(list).sort(nimbus.byPrice).map((c) => ({ value: 'id:' + c.id, label: fmt(c) })), preselect: pre ? 'id:' + pre.id : null });
+      return res.json({ couriers: slab.sort(nimbus.byPrice).map((c) => ({ value: 'id:' + c.id, label: fmt(c) })), preselect: pre ? 'id:' + pre.id : null });
     }
     const list = await sr.serviceableCouriers(req.params.orderId);
     res.json({ couriers: [...new Set(list.map(c => c.courier_name))].sort() });
@@ -253,7 +255,7 @@ async function shipNimbus(it) {
   const list = await nimbus.serviceable(o, pk);
   if (!list.length) throw new Error('No Nimbus courier serves this pin code');
   const pick = nimbus.choose(list, it.partner);
-  if (!pick) throw new Error(`${it.partner} is not available through Nimbus for this order. Available: ${[...new Set(nimbus.lightest(list).map((c) => c.name))].join(', ')}`);
+  if (!pick) { const slab = nimbus.lightest(list); throw new Error(`${it.partner} is not available through Nimbus for this order. Available: ${[...new Set(slab.map((c) => nimbus.displayName(c, slab)))].join(', ')}`); }
   const r = await nimbus.createShipment(o, pick.id, pk, process.env.NIMBUS_WAREHOUSE, phone);
   return { courier: pick.name, awb: r.awb, pickup: 'requested' };
 }
@@ -338,30 +340,81 @@ function summarize(rows) {
   for (const r of rows) { sum.total += r.total; for (const s of report.STAGES) sum[s] += r[s]; }
   return report.withDisplayColumns(sum);
 }
+const stripOrders = ({ orders, ...r }) => r; // the aggregate table doesn't need the per-order detail; /api/report/day and /api/compliance* do
+
+// Shared by /api/report and /api/compliance*: the day rows (with per-order detail) for [from, to], from the
+// pre-computed cache when every day in range is already stored, otherwise computed live and cached for next time.
+async function getRangeRows(from, to, refresh) {
+  if (!refresh) {
+    const stored = await reportstore.get(from, to);
+    const days = []; for (let d = from; d <= to; d = new Date(new Date(d).getTime() + 864e5).toISOString().slice(0, 10)) days.push(d);
+    if (days.every((d) => stored.has(d))) return { rows: days.map((d) => report.withDisplayColumns(stored.get(d))), unknownStatuses: [], source: 'store' };
+  }
+  const r = await report.dailyFunnel(from, to, MIN_AMOUNT);
+  reportstore.upsert(r.rows).catch((e) => console.error('report cache save failed:', e.message));
+  return { rows: r.rows, unknownStatuses: r.unknownStatuses, source: 'live' };
+}
+
+function parseRange(req) {
+  const to = DAY.test(req.query.to) ? req.query.to : isoDay(new Date());
+  const from = DAY.test(req.query.from) ? req.query.from : isoDay(new Date(Date.now() - 6 * 864e5));
+  if (from > to) throw Object.assign(new Error('From date must be before the To date'), { status: 400 });
+  if ((new Date(to) - new Date(from)) / 864e5 > 31) throw Object.assign(new Error('Pick a range of 31 days or less'), { status: 400 });
+  return { from, to };
+}
 
 app.get('/api/report', async (req, res) => {
   try {
     if (!nimbus.configuredV2()) return res.status(409).json({ error: 'Nimbus reporting is not set up: add NIMBUS_API_KEY and NIMBUS_API_SECRET' });
-    const to = DAY.test(req.query.to) ? req.query.to : isoDay(new Date());
-    const from = DAY.test(req.query.from) ? req.query.from : isoDay(new Date(Date.now() - 6 * 864e5));
-    if (from > to) return res.status(400).json({ error: 'From date must be before the To date' });
-    if ((new Date(to) - new Date(from)) / 864e5 > 31) return res.status(400).json({ error: 'Pick a range of 31 days or less' });
+    const { from, to } = parseRange(req);
+    const { rows, unknownStatuses, source } = await getRangeRows(from, to, !!req.query.refresh);
+    res.json({ rows: rows.map(stripOrders), summary: summarize(rows), unknownStatuses, from, to, source });
+  } catch (e) { res.status(e.status || 502).json({ error: e.message }); }
+});
 
-    let rows, source;
+// every individual order for one day, for manual verification. Reads the same cache as /api/report when
+// available; a day outside the pre-computed window is fetched live (slow) and cached for next time.
+app.get('/api/report/day', async (req, res) => {
+  try {
+    if (!nimbus.configuredV2()) return res.status(409).json({ error: 'Nimbus reporting is not set up: add NIMBUS_API_KEY and NIMBUS_API_SECRET' });
+    const day = req.query.day;
+    if (!DAY.test(day)) return res.status(400).json({ error: 'Invalid date' });
+
+    let orders;
     if (!req.query.refresh) {
-      const stored = await reportstore.get(from, to);
-      const days = []; for (let d = from; d <= to; d = new Date(new Date(d).getTime() + 864e5).toISOString().slice(0, 10)) days.push(d);
-      if (days.every((d) => stored.has(d))) { rows = days.map((d) => report.withDisplayColumns(stored.get(d))); source = 'store'; }
+      const stored = await reportstore.get(day, day);
+      if (stored.has(day)) orders = stored.get(day).orders;
     }
-    if (!rows) {
-      const r = await report.dailyFunnel(from, to, MIN_AMOUNT);
-      rows = r.rows;
-      source = 'live';
-      reportstore.upsert(r.rows.map(({ booked, shipped, ...raw }) => raw)).catch((e) => console.error('report cache save failed:', e.message));
-      if (r.unknownStatuses.length) return res.json({ rows, summary: summarize(rows), unknownStatuses: r.unknownStatuses, from, to, source });
+    if (!orders) {
+      const r = await report.dailyFunnel(day, day, MIN_AMOUNT);
+      orders = r.rows[0]?.orders || [];
+      reportstore.upsert(r.rows).catch((e) => console.error('report cache save failed:', e.message));
     }
-    res.json({ rows, summary: summarize(rows), unknownStatuses: [], from, to, source });
+    res.json({ day, orders });
   } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+// ---------- pin code partner compliance: did we ship with the pin code's preferred partner ----------
+// Built from the same per-order detail as the Daily report (no extra Nimbus/Shiprocket calls).
+app.get('/api/compliance', async (req, res) => {
+  try {
+    if (!nimbus.configuredV2()) return res.status(409).json({ error: 'Nimbus reporting is not set up: add NIMBUS_API_KEY and NIMBUS_API_SECRET' });
+    const { from, to } = parseRange(req);
+    const { rows, source } = await getRangeRows(from, to, !!req.query.refresh);
+    const pincodes = compliance.byPincode(rows, pinMap);
+    res.json({ pincodes, summary: compliance.summarize(pincodes), from, to, source });
+  } catch (e) { res.status(e.status || 502).json({ error: e.message }); }
+});
+
+app.get('/api/compliance/pincode', async (req, res) => {
+  try {
+    if (!nimbus.configuredV2()) return res.status(409).json({ error: 'Nimbus reporting is not set up: add NIMBUS_API_KEY and NIMBUS_API_SECRET' });
+    const pincode = String(req.query.pincode || '').trim();
+    if (!pincode) return res.status(400).json({ error: 'Missing pincode' });
+    const { from, to } = parseRange(req);
+    const { rows } = await getRangeRows(from, to, !!req.query.refresh);
+    res.json({ pincode, ...compliance.ordersForPincode(rows, pinMap, pincode), from, to });
+  } catch (e) { res.status(e.status || 502).json({ error: e.message }); }
 });
 
 app.use(express.static(path.join(__dirname, 'public')));

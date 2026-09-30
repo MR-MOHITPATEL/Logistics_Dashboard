@@ -14,15 +14,30 @@ async function login() {
   tokenAt = Date.now();
 }
 
-async function api(path, { method = 'GET', body } = {}, retry = true) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// A day scan makes many sequential calls; a single dropped connection or rate-limit response anywhere in that
+// sequence shouldn't abort the whole thing, so those get a few retries with backoff (retryAuth is separate:
+// one retry after refreshing an expired token).
+async function api(path, { method = 'GET', body } = {}, retryAuth = true, attempt = 1) {
   // tokens last 10 days; refresh after 8
   if (!token || Date.now() - tokenAt > 8 * 24 * 3600 * 1000) await login();
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (res.status === 401 && retry) { token = null; return api(path, { method, body }, false); }
+  const MAX = 4;
+  let res;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    if (attempt >= MAX) throw new Error(`Shiprocket unreachable after ${MAX} tries: ${e.message}`);
+    await sleep(500 * 2 ** (attempt - 1));
+    return api(path, { method, body }, retryAuth, attempt + 1);
+  }
+  if (res.status === 401 && retryAuth) { token = null; return api(path, { method, body }, false, attempt); }
+  if (res.status === 429 && attempt < MAX) { await sleep(2000 * attempt); return api(path, { method, body }, retryAuth, attempt + 1); }
+  if (res.status >= 500 && attempt < MAX) { await sleep(500 * 2 ** (attempt - 1)); return api(path, { method, body }, retryAuth, attempt + 1); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.message || `Shiprocket ${res.status}`);
   return data;

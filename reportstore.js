@@ -23,7 +23,9 @@ async function init(injectedPool) {
       in_transit integer not null default 0,
       delivered integer not null default 0,
       rto integer not null default 0,
+      orders jsonb not null default '[]',
       updated_at timestamptz not null default now())`);
+    await pool.query("alter table report_days add column if not exists orders jsonb not null default '[]'");
   }
 }
 const storage = () => (pool ? 'database' : 'file');
@@ -31,7 +33,7 @@ const readFile = () => { try { return JSON.parse(fs.readFileSync(FILE, 'utf8'));
 
 const snake = (s) => s.replace(/[A-Z]/g, (c) => '_' + c.toLowerCase());
 function fromRow(row) {
-  const base = { day: typeof row.day === 'string' ? row.day : row.day.toISOString().slice(0, 10), total: Number(row.total) };
+  const base = { day: typeof row.day === 'string' ? row.day : row.day.toISOString().slice(0, 10), total: Number(row.total), orders: row.orders || [] };
   for (const s of STAGES) base[s] = Number(row[snake(s)]);
   return base;
 }
@@ -41,18 +43,18 @@ async function upsert(rows) {
   if (pool) {
     const values = [], params = [];
     rows.forEach((r, i) => {
-      const b = i * 7;
-      values.push(`($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},now())`);
-      params.push(r.day, r.total, r.notBooked, r.pendingPickup, r.inTransit, r.delivered, r.rto);
+      const b = i * 8;
+      values.push(`($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},now())`);
+      params.push(r.day, r.total, r.notBooked, r.pendingPickup, r.inTransit, r.delivered, r.rto, JSON.stringify(r.orders || []));
     });
     await pool.query(
-      `insert into report_days (day, total, not_booked, pending_pickup, in_transit, delivered, rto, updated_at) values ${values.join(',')}
+      `insert into report_days (day, total, not_booked, pending_pickup, in_transit, delivered, rto, orders, updated_at) values ${values.join(',')}
        on conflict (day) do update set total=excluded.total, not_booked=excluded.not_booked, pending_pickup=excluded.pending_pickup,
-         in_transit=excluded.in_transit, delivered=excluded.delivered, rto=excluded.rto, updated_at=now()`,
+         in_transit=excluded.in_transit, delivered=excluded.delivered, rto=excluded.rto, orders=excluded.orders, updated_at=now()`,
       params);
   } else {
     const all = readFile();
-    for (const r of rows) all[r.day] = { day: r.day, total: r.total, notBooked: r.notBooked, pendingPickup: r.pendingPickup, inTransit: r.inTransit, delivered: r.delivered, rto: r.rto };
+    for (const r of rows) all[r.day] = { day: r.day, total: r.total, notBooked: r.notBooked, pendingPickup: r.pendingPickup, inTransit: r.inTransit, delivered: r.delivered, rto: r.rto, orders: r.orders || [] };
     fs.mkdirSync(path.dirname(FILE), { recursive: true });
     fs.writeFileSync(FILE, JSON.stringify(all));
   }

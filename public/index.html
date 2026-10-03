@@ -167,6 +167,7 @@
       <a href="#/history" id="navHistory">Shipping history</a>
       <a href="#/report" id="navReport">Daily report</a>
       <a href="#/compliance" id="navCompliance">Partner compliance</a>
+      <a href="#/invoices" id="navInvoices">Invoices</a>
     </nav>
     <div class="grow"></div>
     <div id="orderActions" style="display:flex;gap:12px;align-items:center">
@@ -339,6 +340,42 @@
       </div>
     </div>
   </div>
+
+  <div id="invoices" style="display:none">
+    <div class="bar" style="flex-wrap:wrap">
+      <label class="btn" for="invFile" style="margin:0">Choose invoice ZIP</label>
+      <input type="file" id="invFile" accept=".zip" style="display:none">
+      <span class="dim" id="invFileName">No file chosen</span>
+      <label class="fld">From <input class="in" type="date" id="invFrom"></label>
+      <label class="fld">To <input class="in" type="date" id="invTo"></label>
+      <button class="btn ship" id="invCheck" disabled>Check orders</button>
+    </div>
+    <div id="invNote" class="dim" style="padding:8px 20px 0;font-size:13px"></div>
+    <div id="invLoad" style="margin-top:12px"></div>
+
+    <div id="invSummary" style="display:none;margin:16px 20px;padding:14px 16px;background:var(--surface);border:1px solid var(--line);border-radius:8px">
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <b id="invSummaryText"></b>
+        <a class="btn ship" id="invDownload" href="#" style="text-decoration:none">Download shipped-only ZIP</a>
+        <input class="in" id="invSearch" placeholder="Search order number" style="margin-left:auto">
+        <select class="in" id="invFilter" aria-label="Filter">
+          <option value="">All orders</option>
+          <option value="shipped">Shipped (included)</option>
+          <option value="unshipped">Not booked (left out)</option>
+        </select>
+      </div>
+    </div>
+    <div class="wrap" style="margin-top:0">
+      <table>
+        <thead><tr>
+          <th><div class="th">Order</div></th><th><div class="th">Result</div></th><th><div class="th">Platform</div></th>
+          <th><div class="th">Courier</div></th><th><div class="th">AWB</div></th>
+        </tr></thead>
+        <tbody id="invRows"></tbody>
+      </table>
+      <div class="empty" id="invEmpty">Choose a Shopify invoice ZIP above, then click Check orders.</div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -348,6 +385,8 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'
 // ---------- state ----------
 let orders = [], view = 'ready';
 let pageIdx = 0, cursors = [null], hasNext = false, hidden = 0, capped = false, loading = false;
+const pageCache = new Map(); // cursor -> response, prefetched in the background so Next feels instant
+const cursorKey = (c) => c || 'ROOT';
 const known = {};            // orderId -> order, across pages (bulk select survives paging and filtering)
 const couriers = {};         // orderId -> couriers Shiprocket says can serve the order
 const selected = new Set();
@@ -407,34 +446,62 @@ function activeFilters() {
 }
 
 let loadSeq = 0;
+function ordersQs(cursor, fresh) {
+  const qs = new URLSearchParams({ view, f: JSON.stringify(activeFilters()) });
+  if ($('#search').value.trim()) qs.set('q', $('#search').value.trim());
+  if ($('#from').value) qs.set('from', $('#from').value);
+  if ($('#to').value) qs.set('to', $('#to').value);
+  if (fresh) qs.set('refresh', '1');
+  if (cursor) qs.set('cursor', cursor);
+  return qs;
+}
+function applyOrdersResult(d) {
+  orders = d.orders; hasNext = !!d.nextCursor; hidden = d.hidden; capped = d.capped;
+  cursors[pageIdx + 1] = d.nextCursor;
+  orders.forEach((x) => (known[x.orderId] = x));
+  if (!$('#from').value) { $('#from').value = d.from; $('#to').value = d.to; }
+  $('#warn').textContent = d.sheetWarning ? 'Disposition is unavailable right now: ' + d.sheetWarning : '';
+}
+// Shiprocket can be slow, so once a page is showing, quietly fetch the next one in the background —
+// by the time the team clicks Next, it's usually already here and shows instantly.
+async function prefetchNextPage() {
+  if (!hasNext) return;
+  const cursor = cursors[pageIdx + 1], key = cursorKey(cursor);
+  if (pageCache.has(key)) return;
+  try { pageCache.set(key, await api('/api/orders?' + ordersQs(cursor, false))); } catch (e) { /* silent: Next will just fetch normally */ }
+}
+
 async function load(fresh = false) {
   const seq = ++loadSeq;
   ordersLoaded = true;
-  loading = true;
   $('#login').style.display = 'none'; $('#app').style.display = 'block';
   // clear old rows so the screen never looks stale while a new filter loads
   orders = []; $('#rows').innerHTML = ''; $('#pageInfo').textContent = '';
   $('#prev').disabled = $('#next').disabled = $('#bulk').disabled = true;
+
+  const key = cursorKey(cursors[pageIdx]);
+  const cached = !fresh && pageCache.get(key);
+  if (cached) {
+    applyOrdersResult(cached);
+    render();
+    loadCouriers();
+    prefetchNextPage();
+    return;
+  }
+
+  loading = true;
   $('#load').classList.add('on');
   setEmpty('Loading orders…');
   try {
-    const qs = new URLSearchParams({ view, f: JSON.stringify(activeFilters()) });
-    if ($('#search').value.trim()) qs.set('q', $('#search').value.trim());
-    if ($('#from').value) qs.set('from', $('#from').value);
-    if ($('#to').value) qs.set('to', $('#to').value);
-    if (fresh) qs.set('refresh', '1');
-    if (cursors[pageIdx]) qs.set('cursor', cursors[pageIdx]);
-    const [d, o] = await Promise.all([api('/api/orders?' + qs), fresh || !opts.loaded ? api('/api/filter-options').catch(() => null) : null]);
+    const [d, o] = await Promise.all([api('/api/orders?' + ordersQs(cursors[pageIdx], fresh)), fresh || !opts.loaded ? api('/api/filter-options').catch(() => null) : null]);
     if (seq !== loadSeq) return; // a newer request replaced this one
     if (o) { opts.disposition = o.disposition; opts.partner = o.partner; opts.loaded = true; }
-    orders = d.orders; hasNext = !!d.nextCursor; hidden = d.hidden; capped = d.capped;
-    cursors[pageIdx + 1] = d.nextCursor;
-    orders.forEach((x) => (known[x.orderId] = x));
-    if (!$('#from').value) { $('#from').value = d.from; $('#to').value = d.to; }
-    $('#warn').textContent = d.sheetWarning ? 'Disposition is unavailable right now: ' + d.sheetWarning : '';
+    pageCache.set(key, d);
+    applyOrdersResult(d);
     loading = false;
     render();
     loadCouriers();
+    prefetchNextPage();
   } catch (e) {
     if (seq !== loadSeq) return;
     loading = false;
@@ -469,7 +536,7 @@ function refreshFilterUi() { renderHead(); renderChips(); syncSelectAll(); }
 
 let timer;
 function filtersChanged() { refreshFilterUi(); clearTimeout(timer); timer = setTimeout(reload, 450); }
-function reload() { pageIdx = 0; cursors = [null]; load(); }
+function reload() { pageIdx = 0; cursors = [null]; pageCache.clear(); load(); }
 
 // ---------- rows ----------
 function render() {
@@ -603,7 +670,7 @@ async function ship(ids, btns) {
     if (e.message !== 'auth') alert(`Stopped after ${done.length} of ${ids.length} orders: ${e.message}\nOrders that already shipped are in Shipping history. The rest are still selected.`);
   }
   if (done.length) showShipped(done);
-  pageIdx = 0; cursors = [null];
+  pageIdx = 0; cursors = [null]; pageCache.clear(); // shipped orders must disappear from Ready to ship, so stale cached pages can't be reused
   await load();
   btns.forEach((b) => (b.disabled = false));
 }
@@ -730,20 +797,23 @@ const istDay = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata
 const onHistory = () => location.hash === '#/history';
 const onReport = () => location.hash === '#/report';
 const onCompliance = () => location.hash === '#/compliance';
+const onInvoices = () => location.hash === '#/invoices';
 let ordersLoaded = false, hPage = 1, hResult = 'all', hSeq = 0;
 
 function showPage() {
-  const h = onHistory(), r = onReport(), c = onCompliance();
-  const other = h || r || c;
+  const h = onHistory(), r = onReport(), c = onCompliance(), inv = onInvoices();
+  const other = h || r || c || inv;
   $('#ordersPage').style.display = other ? 'none' : '';
   $('#hist').style.display = h ? '' : 'none';
   $('#report').style.display = r ? '' : 'none';
   $('#compliance').style.display = c ? '' : 'none';
+  $('#invoices').style.display = inv ? '' : 'none';
   $('#orderActions').style.display = other ? 'none' : 'flex';
   $('#navOrders').setAttribute('aria-current', other ? 'false' : 'page');
   $('#navHistory').setAttribute('aria-current', h ? 'page' : 'false');
   $('#navReport').setAttribute('aria-current', r ? 'page' : 'false');
   $('#navCompliance').setAttribute('aria-current', c ? 'page' : 'false');
+  $('#navInvoices').setAttribute('aria-current', inv ? 'page' : 'false');
   closePop();
   if (h) {
     if (!$('#hFrom').value) { $('#hTo').value = istDay(new Date()); $('#hFrom').value = istDay(new Date(Date.now() - 30 * 864e5)); }
@@ -754,6 +824,8 @@ function showPage() {
   } else if (c) {
     if (!$('#cFrom').value) { $('#cTo').value = istDay(new Date()); $('#cFrom').value = istDay(new Date(Date.now() - 6 * 864e5)); }
     loadCompliance();
+  } else if (inv) {
+    $('#login').style.display = 'none'; $('#app').style.display = 'block';
   } else if (!ordersLoaded) load();
 }
 window.addEventListener('hashchange', showPage);
@@ -956,6 +1028,78 @@ $('#cDetailRows').addEventListener('click', (e) => {
   const b = e.target.closest('.copyAwb'); if (!b) return;
   navigator.clipboard?.writeText(b.dataset.awb).then(() => (b.textContent = 'Copied'));
 });
+
+// ---------- Invoices: keep only the invoices for orders actually booked (Shiprocket or Nimbus) ----------
+let invFile = null, invResults = [];
+function invDateRangeFromName(name) {
+  const m = name.match(/invoice-(\d{4}-\d{2}-\d{2}T[\d_.]+Z)-(\d{4}-\d{2}-\d{2}T[\d_.]+Z)/i);
+  if (!m) return null;
+  const toIso = (s) => s.replace(/_/g, ':');
+  const start = new Date(toIso(m[1])), end = new Date(toIso(m[2]));
+  if (isNaN(start) || isNaN(end)) return null;
+  const ist = (d) => istDay(d);
+  return { from: ist(start), to: ist(new Date(end.getTime() - 1000)) };
+}
+$('#invFile').onchange = () => {
+  invFile = $('#invFile').files[0] || null;
+  $('#invFileName').textContent = invFile ? invFile.name : 'No file chosen';
+  $('#invCheck').disabled = !invFile;
+  $('#invNote').textContent = '';
+  if (invFile) {
+    const r = invDateRangeFromName(invFile.name);
+    if (r) { $('#invFrom').value = r.from; $('#invTo').value = r.to; $('#invNote').textContent = `Detected date range from the file name: ${r.from} to ${r.to}. Change it below if that's wrong.`; }
+    else $('#invNote').textContent = "Couldn't detect a date range from the file name — pick From/To below.";
+  }
+};
+$('#invCheck').onclick = async () => {
+  if (!invFile) return;
+  $('#invCheck').disabled = true;
+  $('#invSummary').style.display = 'none';
+  $('#invRows').innerHTML = ''; invResults = [];
+  const empty = $('#invEmpty'); empty.style.display = 'block';
+  empty.textContent = 'Checking every order against Nimbus and Shiprocket — this reads live data, so it can take a minute or two…';
+  $('#invLoad').classList.add('on');
+  try {
+    const fd = new FormData();
+    fd.append('zip', invFile);
+    const qs = new URLSearchParams();
+    if ($('#invFrom').value) qs.set('from', $('#invFrom').value);
+    if ($('#invTo').value) qs.set('to', $('#invTo').value);
+    const res = await fetch('/api/invoices/check?' + qs, { method: 'POST', body: fd });
+    if (res.status === 401) { showLogin(); throw new Error('auth'); }
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'Request failed');
+    invResults = d.results;
+    $('#invSummaryText').textContent = `${d.shippedCount} of ${d.total} invoices are for orders that have been booked — those are the ones in the download.`;
+    $('#invDownload').href = '/api/invoices/download/' + d.downloadId;
+    $('#invDownload').textContent = `Download shipped-only ZIP (${d.shippedCount})`;
+    $('#invSummary').style.display = 'block';
+    renderInvoices();
+  } catch (e) {
+    if (e.message !== 'auth') { empty.style.display = 'block'; empty.textContent = 'Could not check the file: ' + e.message; }
+  }
+  $('#invLoad').classList.remove('on');
+  $('#invCheck').disabled = false;
+};
+function renderInvoices() {
+  const q = $('#invSearch').value.trim().toLowerCase();
+  const f = $('#invFilter').value;
+  const list = invResults.filter((r) =>
+    (!f || (f === 'shipped' ? r.shipped : !r.shipped)) &&
+    (!q || r.orderNo.toLowerCase().includes(q)));
+  const empty = $('#invEmpty');
+  empty.style.display = list.length ? 'none' : 'block';
+  empty.textContent = invResults.length ? 'No invoices match this search.' : 'No results yet.';
+  $('#invRows').innerHTML = list.map((r) => `<tr>
+      <td><b>${esc(r.orderNo)}</b></td>
+      <td>${r.shipped ? '<span class="match-yes">✓ Shipped — included</span>' : '<span class="dim">Not booked — left out</span>'}</td>
+      <td>${r.platform ? `<span class="tag ${r.platform === 'nimbus' ? 'nimbus' : ''}">${r.platform === 'nimbus' ? 'Nimbus' : 'Shiprocket'}</span>` : '<span class="dim">–</span>'}</td>
+      <td>${esc(r.courier) || '<span class="dim">–</span>'}</td>
+      <td>${r.awb ? `<span class="awb">${esc(r.awb)}</span>` : '<span class="dim">–</span>'}</td>
+    </tr>`).join('');
+}
+$('#invSearch').oninput = renderInvoices;
+$('#invFilter').onchange = renderInvoices;
 
 function histQs() {
   const qs = new URLSearchParams();

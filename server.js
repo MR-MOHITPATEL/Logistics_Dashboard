@@ -1,4 +1,7 @@
 const express = require('express');
+const multer = require('multer');
+const AdmZip = require('adm-zip');
+const invoices = require('./invoices');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -83,7 +86,7 @@ async function dropCancelled(ext, force) {
 }
 
 const isoDay = (d) => d.toISOString().slice(0, 10);
-const PAGE = 50;
+const PAGE = 10; // smaller pages mean fewer Shiprocket page-scans needed to fill one, so the first screen shows sooner
 const MIN_AMOUNT = Number(process.env.MIN_AMOUNT ?? 500);
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -164,8 +167,10 @@ app.get('/api/orders', async (req, res) => {
     const [cp, ci] = String(req.query.cursor || '1:0').split(':').map((n) => parseInt(n, 10) || 0);
 
     let disp = null, sheetWarning = null;
-    try { disp = await sheets.dispositions(req.query.refresh === '1'); }
-    catch (e) { sheetWarning = e.message; } // orders still load if the sheet is unreachable
+    // Google Sheets can be slow (large sheet) — start it now but don't block on it yet; it only needs to be
+    // ready by the time we shape the first order, so it runs alongside the first Shiprocket fetch instead of
+    // before it (the two slow things happen at once, not one after the other).
+    const dispPromise = sheets.dispositions(fresh).catch((e) => { sheetWarning = e.message; return null; });
 
     const keep = (o) =>
       (view !== 'ready' || !o.viaOther) && // shipped through Nimbus: no longer ready
@@ -174,13 +179,16 @@ app.get('/api/orders', async (req, res) => {
       o.productAmount >= MIN_AMOUNT; // orders under the minimum product amount are always hidden
 
     const out = [];
-    let p = Math.max(cp, 1), i = ci, next = null, scanned = 0, hidden = 0, capped = false;
+    let p = Math.max(cp, 1), i = ci, next = null, scanned = 0, hidden = 0, capped = false, firstFetch = true;
     while (true) {
       const args = { from, to, perPage: 100, newOnly: view === 'ready', fresh };
-      const [r] = await Promise.all([ // read the next page in parallel so it is already cached if we need it
+      const srPromise = Promise.all([ // read the next page in parallel so it is already cached if we need it
         sr.listOrders({ ...args, page: p }),
         sr.listOrders({ ...args, page: p + 1 }).catch(() => null),
       ]);
+      let r;
+      if (firstFetch) { [[r], disp] = await Promise.all([srPromise, dispPromise]); firstFetch = false; }
+      else [r] = await srPromise;
       scanned++;
       cacheOrders(r.data);
       let ext = new Map();
@@ -415,6 +423,54 @@ app.get('/api/compliance/pincode', async (req, res) => {
     const { rows } = await getRangeRows(from, to, !!req.query.refresh);
     res.json({ pincode, ...compliance.ordersForPincode(rows, pinMap, pincode), from, to });
   } catch (e) { res.status(e.status || 502).json({ error: e.message }); }
+});
+
+// ---------- invoices: keep only the invoices for orders actually booked (Shiprocket or Nimbus) ----------
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
+const pendingZips = new Map(); // download id -> { buffer, at }
+setInterval(() => { const cutoff = Date.now() - 30 * 60 * 1000; for (const [id, x] of pendingZips) if (x.at < cutoff) pendingZips.delete(id); }, 5 * 60 * 1000);
+
+app.post('/api/invoices/check', upload.single('zip'), async (req, res) => {
+  try {
+    if (!nimbus.configuredV2()) return res.status(409).json({ error: 'Nimbus reporting is not set up: add NIMBUS_API_KEY and NIMBUS_API_SECRET' });
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    let zip;
+    try { zip = new AdmZip(req.file.buffer); } catch (e) { return res.status(400).json({ error: 'Could not read that file as a ZIP' }); }
+    const entries = zip.getEntries().filter((e) => !e.isDirectory && /\.pdf$/i.test(e.entryName));
+    if (!entries.length) return res.status(400).json({ error: 'No PDF files found inside the ZIP' });
+
+    const detected = invoices.dateRangeFromFilename(req.file.originalname);
+    const from = DAY.test(req.query.from) ? req.query.from : detected?.from;
+    const to = DAY.test(req.query.to) ? req.query.to : detected?.to;
+    if (!from || !to) return res.status(400).json({ error: "Could not detect the date range from the file name. Pick a From/To date and try again." });
+    if ((new Date(to) - new Date(from)) / 864e5 > 31) return res.status(400).json({ error: 'Pick a range of 31 days or less' });
+
+    const orderNumbers = entries.map((e) => e.entryName.replace(/\.pdf$/i, ''));
+    const checked = await invoices.checkOrders(orderNumbers, from, to);
+
+    const out = new AdmZip();
+    const results = entries.map((e) => {
+      const no = e.entryName.replace(/\.pdf$/i, '');
+      const c = checked.get(no) || { shipped: false, platform: null, awb: null, courier: null };
+      if (c.shipped) out.addFile(e.entryName, e.getData());
+      return { orderNo: no, ...c };
+    });
+
+    const shippedCount = results.filter((r) => r.shipped).length;
+    const downloadId = crypto.randomBytes(12).toString('hex');
+    pendingZips.set(downloadId, { buffer: out.toBuffer(), at: Date.now(), name: req.file.originalname.replace(/\.zip$/i, '') + '-shipped-only.zip' });
+
+    res.json({ results, total: results.length, shippedCount, from, to, detectedFromFile: !!detected, downloadId });
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+app.get('/api/invoices/download/:id', (req, res) => {
+  const z = pendingZips.get(req.params.id);
+  if (!z) return res.status(404).send('This link has expired. Re-check the ZIP to download it again.');
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${z.name}"`);
+  res.send(z.buffer);
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
